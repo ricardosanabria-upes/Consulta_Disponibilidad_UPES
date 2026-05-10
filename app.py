@@ -501,7 +501,7 @@ with tab_semana:
             return ""
 
         st.dataframe(
-            df_tabla.style.applymap(color_celda),
+            df_tabla.style.map(color_celda),
             use_container_width=True,
             height=380
         )
