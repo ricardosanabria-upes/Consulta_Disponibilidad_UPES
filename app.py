@@ -9,72 +9,37 @@ st.set_page_config(
     page_title="Disponibilidad de Instalaciones — UPES",
     page_icon="🏫",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# ─── ESTILOS CSS PARA LOGRAR EL LOOK DE LA IMAGEN ────────────────────────────
+# ─── ESTILOS CSS (DISEÑO IDÉNTICO A LA IMAGEN) ───────────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
     
-    html, body, [class*="css"] { 
-        font-family: 'Plus Jakarta Sans', sans-serif; 
-    }
+    html, body, [class*="css"] { font-family: 'Plus Jakarta Sans', sans-serif; }
 
     .main-title {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #1e1b4b;
-        margin-bottom: 20px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
+        font-size: 1.8rem; font-weight: 700; color: #1e1b4b;
+        margin-bottom: 20px; display: flex; align-items: center; gap: 10px;
     }
 
-    /* Contenedores de bloques estilizados como la imagen */
     .bloque-item {
-        padding: 10px 18px;
-        border-radius: 10px;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        font-size: 0.95rem;
-        border: 1px solid transparent;
-        transition: transform 0.1s ease;
+        padding: 10px 18px; border-radius: 10px; margin-bottom: 8px;
+        display: flex; align-items: center; font-size: 0.95rem; border: 1px solid transparent;
     }
 
-    .bloque-clase {
-        background-color: #fff1f2;
-        border-color: #fecdd3;
-        color: #991b1b;
-    }
+    .bloque-clase { background-color: #fff1f2; border-color: #fecdd3; color: #991b1b; }
+    .bloque-libre { background-color: #f0fdf4; border-color: #dcfce7; color: #166534; }
+    .bloque-reserva { background-color: #fefce8; border-color: #fef08a; color: #713f12; }
 
-    .bloque-libre {
-        background-color: #f0fdf4;
-        border-color: #dcfce7;
-        color: #166534;
-    }
-
-    .icon-container {
-        margin-right: 12px;
-        display: flex;
-        align-items: center;
-        font-size: 1.1rem;
-    }
-
-    .time-text {
-        font-weight: 600;
-        margin-right: 8px;
-        white-space: nowrap;
-    }
-
-    .detail-text {
-        font-weight: 400;
-    }
+    .icon-container { margin-right: 12px; display: flex; align-items: center; font-size: 1.1rem; }
+    .time-text { font-weight: 600; margin-right: 8px; white-space: nowrap; }
+    .detail-text { font-weight: 400; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── TU FUNCIÓN DE NORMALIZACIÓN ──────────────────────────────────────────────
+# ─── FUNCIONES DE APOYO ───────────────────────────────────────────────────────
 def normalizar_aula(aula: str) -> str:
     mapeo = {
         "A-21": "A-21 C/Acondicionado",
@@ -83,7 +48,30 @@ def normalizar_aula(aula: str) -> str:
     }
     return mapeo.get(aula.strip(), aula.strip())
 
+def hay_traslape(ini1: time, fin1: time, ini2: time, fin2: time) -> bool:
+    if None in [ini1, fin1, ini2, fin2]: return False
+    return ini1 < fin2 and ini2 < fin1
+
 # ─── CARGA DE DATOS ───────────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def cargar_reservas():
+    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
+    try:
+        df = pd.read_csv(url, header=1)
+        df.columns = df.columns.str.strip()
+        # Mapeo flexible de columnas de Google Sheets
+        rename = {}
+        for col in df.columns:
+            c = col.lower()
+            if "instalación" in c or "instalacion" in c: rename[col] = "instalacion"
+            elif "fecha" in c: rename[col] = "fecha"
+            elif "inicio" in c: rename[col] = "hora_inicio"
+            elif "finalización" in c or "fin" in c: rename[col] = "hora_fin"
+            elif "nombre" in c: rename[col] = "nombre"
+            elif "actividad" in c: rename[col] = "actividad"
+        return df.rename(columns=rename)
+    except: return None
+
 @st.cache_data(ttl=3600)
 def cargar_horario():
     url = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
@@ -92,31 +80,33 @@ def cargar_horario():
         df_raw = pd.read_excel(io.BytesIO(resp.content))
         df_raw["Dia"] = df_raw["Dia"].ffill()
         df_raw["Hora"] = df_raw["Hora"].ffill()
-        
         filas = []
-        aulas_columnas = [c for c in df_raw.columns if c not in ["Dia", "Hora"]]
+        aulas = [c for c in df_raw.columns if c not in ["Dia", "Hora"]]
         for _, row in df_raw.iterrows():
-            dia = str(row["Dia"]).strip()
-            hora = str(row["Hora"]).strip()
-            for aula in aulas_columnas:
+            dia, hora = str(row["Dia"]).strip(), str(row["Hora"]).strip()
+            try:
+                h_parts = hora.replace("–", "-").split("-")
+                h_ini = datetime.strptime(h_parts[0].strip(), "%H:%M").time()
+                h_fin = datetime.strptime(h_parts[1].strip(), "%H:%M").time()
+            except: h_ini = h_fin = None
+            for aula in aulas:
                 val = row[aula]
                 ocupada = not (pd.isna(val) or str(val).strip() == "")
                 filas.append({
-                    "Dia": dia, 
-                    "Hora": hora, 
-                    "Aula": normalizar_aula(aula), # Aquí usamos tu función
+                    "Dia": dia, "Hora": hora, "HoraInicio": h_ini, "HoraFin": h_fin,
+                    "Aula": normalizar_aula(aula),
                     "Detalle": str(val).strip() if ocupada else "Libre",
                     "Ocupada": ocupada
                 })
         return pd.DataFrame(filas)
     except: return None
 
-# ─── INTERFAZ DE USUARIO ──────────────────────────────────────────────────────
+# ─── LÓGICA DE INTERFAZ ───────────────────────────────────────────────────────
 df_horario = cargar_horario()
+df_reservas = cargar_reservas()
 
 st.markdown('<div class="main-title">🔍 Consultar disponibilidad</div>', unsafe_allow_html=True)
 
-# Selectores superiores
 c1, c2 = st.columns(2)
 with c1:
     inst_sel = st.selectbox("Instalación", [
@@ -129,37 +119,55 @@ with c1:
 with c2:
     fecha_sel = st.date_input("Fecha", value=date.today())
 
-# Título de resultados
 dia_nombres = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-dia_excel = {0: "1.Lunes", 1: "2.Martes", 2: "3.Miercoles", 3: "4.Jueves", 4: "5.Viernes", 5: "6.Sabado", 6: "7.Domingo"}
+dia_excel_key = {0: "1.Lunes", 1: "2.Martes", 2: "3.Miercoles", 3: "4.Jueves", 4: "5.Viernes", 5: "6.Sabado", 6: "7.Domingo"}
 
 st.write(f"**{inst_sel} — {dia_nombres[fecha_sel.weekday()]} {fecha_sel.strftime('%d/%m/%Y')}**")
 st.write("Horario del ciclo:")
 
-# Renderizado de bloques
 if df_horario is not None:
-    # Filtrado exacto por aula normalizada y día
-    dia_busqueda = dia_excel.get(fecha_sel.weekday())
+    dia_busqueda = dia_excel_key.get(fecha_sel.weekday())
     bloques = df_horario[(df_horario["Aula"] == inst_sel) & (df_horario["Dia"] == dia_busqueda)]
     
-    if bloques.empty:
-        st.info("No hay clases programadas para este día.")
-    else:
-        for _, row in bloques.iterrows():
-            if row["Ocupada"]:
-                tipo_css = "clase"
-                icono = "🔴"
-            else:
-                tipo_css = "libre"
-                icono = "✅"
-            
-            # HTML que genera el estilo de la imagen
-            st.markdown(f"""
-                <div class="bloque-item bloque-{tipo_css}">
-                    <div class="icon-container">{icono}</div>
-                    <span class="time-text">{row['Hora']}</span>
-                    <span class="detail-text">— {row['Detalle']}</span>
-                </div>
-            """, unsafe_allow_html=True)
+    for _, row in bloques.iterrows():
+        tipo_css = "libre"
+        icono = "✅"
+        detalle = row["Detalle"]
+        
+        if row["Ocupada"]:
+            tipo_css = "clase"
+            icono = "🔴"
+        else:
+            # VERIFICAR SI HAY RESERVA EN GOOGLE SHEETS PARA ESTE BLOQUE LIBRE
+            if df_reservas is not None:
+                for _, res in df_reservas.iterrows():
+                    try:
+                        res_fecha = pd.to_datetime(res["fecha"], dayfirst=True).date()
+                        if res_fecha == fecha_sel and str(res["instalacion"]).strip() == inst_sel:
+                            res_ini = datetime.strptime(str(res["hora_inicio"])[:5], "%H:%M").time()
+                            res_fin = datetime.strptime(str(res["hora_fin"])[:5], "%H:%M").time()
+                            
+                            if hay_traslape(row["HoraInicio"], row["HoraFin"], res_ini, res_fin):
+                                tipo_css = "reserva"
+                                icono = "🟡"
+                                detalle = f"RESERVADO: {res.get('nombre', 'Evento')} - {res.get('actividad', '')}"
+                                break
+                    except: continue
+
+        st.markdown(f"""
+            <div class="bloque-item bloque-{tipo_css}">
+                <div class="icon-container">{icono}</div>
+                <span class="time-text">{row['Hora']}</span>
+                <span class="detail-text">— {detalle}</span>
+            </div>
+        """, unsafe_allow_html=True)
 else:
-    st.error("Error al cargar datos.")
+    st.error("No se pudo cargar el horario.")
+
+# Sidebar informativo
+with st.sidebar:
+    st.header("📡 Sincronización")
+    if df_reservas is not None: st.success(f"Conectado a Google Sheets ({len(df_reservas)} registros)")
+    if st.button("🔄 Refrescar Datos"):
+        st.cache_data.clear()
+        st.rerun()
