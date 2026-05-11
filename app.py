@@ -3,7 +3,7 @@ import pandas as pd
 import io
 from datetime import datetime, date, time
 
-# Configuración de interfaz
+# 1. Configuración de la App
 st.set_page_config(page_title="UPES Disponibilidad", layout="wide")
 
 st.markdown("""
@@ -14,39 +14,44 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Enlaces de datos
 URL_SHEETS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
 URL_GITHUB = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
 
 INSTALACIONES = ["A-11", "A-12", "A-13", "A-14", "A-15", "A-16", "A-21 C/Acondicionado", "A-22 C/Acondicionado", "A-31", "A-32", "A-33", "A-34 (Mesas de dibujo)", "A-35", "A-36", "A-41", "A-42", "A-43", "A-44", "A-45", "A-46", "SUM", "Sala de juntas", "Pasillos", "Biblioteca"]
 
+# 2. Carga de Reservas (Google Sheets)
 @st.cache_data(ttl=60)
 def cargar_reservas():
     try:
-        # Cargamos ignorando la primera fila de título "RESERVAS UPES 2026"
+        # Cargamos saltando la primera fila de título
         df = pd.read_csv(URL_SHEETS, skiprows=1)
-        # Limpiamos nombres de columnas de saltos de línea para que Python las entienda
+        # Limpiar nombres de columnas: quitar saltos de línea y espacios
         df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
         
-        # Mapeo por palabras clave (Detección inteligente)
-        new_names = {}
+        # Diccionario para renombrar columnas por coincidencia parcial
+        mapeo = {}
         for c in df.columns:
             low = c.lower()
-            if "instalación" in low or "instalacion" in low: new_names[c] = "aula"
-            elif "fecha" in low: new_names[c] = "fecha"
-            elif "inicio" in low: new_names[c] = "h_ini"
-            elif "finalización" in low or "finalizacion" in low: new_names[c] = "h_fin"
-            elif "solicitante" in low: new_names[c] = "user"
+            if "instalación" in low or "instalacion" in low: mapeo[c] = "aula"
+            elif "fecha" in low: mapeo[c] = "fecha"
+            elif "inicio" in low: mapeo[c] = "h_ini"
+            elif "finalización" in low or "finalizacion" in low: mapeo[c] = "h_fin"
+            elif "solicitante" in low: mapeo[c] = "usuario"
         
-        df = df.rename(columns=new_names)
+        df = df.rename(columns=mapeo)
         
-        # Procesamiento de datos de texto
-        if "aula" in df.columns:
-            df["aula"] = df["aula"].astype(str).str.strip().replace({
-                "A-21": "A-21 C/Acondicionado", 
-                "A-22": "A-22 C/Acondicionado", 
-                "A-34": "A-34 (Mesas de dibujo)"
-            })
-            
+        # Validar si las columnas mínimas existen
+        if "aula" not in df.columns: return pd.DataFrame()
+
+        # Limpiar nombres de aulas para que coincidan con la lista
+        df["aula"] = df["aula"].astype(str).str.strip().replace({
+            "A-21": "A-21 C/Acondicionado",
+            "A-22": "A-22 C/Acondicionado",
+            "A-34": "A-34 (Mesas de dibujo)"
+        })
+
+        # Conversión de Fechas y Horas
         df["fecha_dt"] = pd.to_datetime(df["fecha"], dayfirst=True, errors='coerce').dt.date
         df["h_ini_dt"] = pd.to_datetime(df["h_ini"], errors='coerce').dt.time
         df["h_fin_dt"] = pd.to_datetime(df["h_fin"], errors='coerce').dt.time
@@ -55,6 +60,7 @@ def cargar_reservas():
     except:
         return pd.DataFrame()
 
+# 3. Carga de Horario (GitHub)
 @st.cache_data(ttl=3600)
 def cargar_horario():
     try:
@@ -82,43 +88,39 @@ def cargar_horario():
         return pd.DataFrame(res)
     except: return None
 
-# Interfaz Principal
-st.title("🏫 Control de Disponibilidad UPES")
+# 4. Interfaz y Lógica
+st.title("🏫 Sistema de Disponibilidad UPES")
 
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
 c1, c2 = st.columns(2)
-aula_sel = c1.selectbox("Aula", INSTALACIONES)
+aula_sel = c1.selectbox("Seleccione Aula", INSTALACIONES)
 fecha_sel = c2.date_input("Fecha", value=date.today())
 
-DIAS_DICC = {0: "1.Lunes", 1: "2.Martes", 2: "3.Miercoles", 3: "4.Jueves", 4: "5.Viernes", 5: "6.Sabado", 6: "7.Domingo"}
-dia_nombre = DIAS_DICC.get(fecha_sel.weekday())
+DIAS_MAP = {0: "1.Lunes", 1: "2.Martes", 2: "3.Miercoles", 3: "4.Jueves", 4: "5.Viernes", 5: "6.Sabado", 6: "7.Domingo"}
+dia_nombre = DIAS_MAP.get(fecha_sel.weekday())
 
 if df_h is not None:
-    # Filtramos bloques horarios base para el aula
+    # Bloques horarios base
     bloques = df_h[df_h["aula"].str.contains(aula_sel.split()[0])].drop_duplicates(subset=["hora_t"]).sort_values("hi")
     
     for _, b in bloques.iterrows():
-        estado, detalle = "libre", "Disponible"
+        est, det = "libre", "Disponible"
         
-        # 1. ¿Hay Clase en el horario base?
-        match_clase = df_h[(df_h["aula"].str.contains(aula_sel.split()[0])) & (df_h["dia"] == dia_nombre) & (df_h["hora_t"] == b["hora_t"]) & (df_h["tipo"] == "clase")]
+        # A. Verificar Clase
+        m_clase = df_h[(df_h["aula"].str.contains(aula_sel.split()[0])) & (df_h["dia"] == dia_nombre) & (df_h["hora_t"] == b["hora_t"]) & (df_h["tipo"] == "clase")]
         
-        if not match_clase.empty:
-            estado, detalle = "clase", match_clase.iloc[0]["desc"]
+        if not m_clase.empty:
+            est, det = "clase", m_clase.iloc[0]["desc"]
         else:
-            # 2. ¿Hay Reserva en Google Sheets?
+            # B. Verificar Reserva (Sheets)
             if not df_r.empty:
-                filtro_res = df_r[(df_r["aula"] == aula_sel) & (df_r["fecha_dt"] == fecha_sel)]
-                for _, r in filtro_res.iterrows():
+                m_res = df_r[(df_r["aula"] == aula_sel) & (df_r["fecha_dt"] == fecha_sel)]
+                for _, r in m_res.iterrows():
+                    # Lógica de traslape: (Inicio1 < Fin2) y (Inicio2 < Fin1)
                     if (b["hi"] < r["h_fin_dt"]) and (r["h_ini_dt"] < b["hf"]):
-                        estado, detalle = "reserva", f"RESERVA: {r.get('user', 'Solicitante')}"
+                        est, det = "reserva", f"RESERVADO: {r.get('usuario', 'Solicitante')}"
                         break
         
-        st.markdown(f"<div class='{estado}'><b>{b['hora_t']}</b> — {detalle}</div>", unsafe_allow_html=True)
-
-# Sección de depuración corregida
-with st.expander("🛠️ Depuración de Datos"):
-    st.write("Registros cargados desde Sheets:", len(df_r))
-    st.dataframe(df_r)
+        st.markdown(f"<div class='{est}'><b>{b['hora_t
