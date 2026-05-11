@@ -41,7 +41,6 @@ INSTALACIONES = [
     "SUM", "Sala de juntas", "Pasillos", "Biblioteca",
 ]
 
-# MAPEO CRÍTICO: Traduce lo que viene de Sheets a lo que usa el App
 MAPEO_INSTALACIONES_SHEETS = {
     "A-25-26": "SUM",
     "A-21": "A-21 C/Acondicionado",
@@ -59,11 +58,9 @@ DIA_NOMBRE = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes
 @st.cache_data(ttl=300)
 def cargar_reservas_sheets():
     try:
-        # skiprows=1 porque la primera fila es un título general en tu Sheet
         df = pd.read_csv(GOOGLE_SHEET_URL, skiprows=1)
         df.columns = df.columns.str.strip()
         
-        # Renombrar columnas por coincidencia parcial (más robusto)
         rename_map = {}
         for col in df.columns:
             c_low = col.lower()
@@ -77,10 +74,10 @@ def cargar_reservas_sheets():
         df = df.rename(columns=rename_map)
 
         if "instalacion" in df.columns:
-            df["instalacion"] = df["instalacion"].astype(str).str.strip()
+            # CORRECCIÓN: Aplicar .str.strip() a la serie, no al dataframe
+            df["instalacion"] = df["instalacion"].fillna("").astype(str).str.strip()
             df["instalacion"] = df["instalacion"].replace(MAPEO_INSTALACIONES_SHEETS)
         
-        # Convertir horas a objetos time (maneja formatos con segundos 08:00:00)
         for h_col in ["hora_inicio", "hora_fin"]:
             if h_col in df.columns:
                 df[h_col] = pd.to_datetime(df[h_col].astype(str), errors='coerce').dt.time
@@ -114,9 +111,10 @@ def cargar_horario_github():
             for aula in aulas:
                 val = row[aula]
                 ocupada = not (pd.isna(val) or str(val).strip() == "")
+                nombre_aula = MAPEO_INSTALACIONES_SHEETS.get(aula.strip(), aula.strip())
                 filas.append({
                     "Dia": dia, "Hora": hora, "HoraInicio": h_ini, "HoraFin": h_fin,
-                    "Aula": MAPEO_INSTALACIONES_SHEETS.get(aula.strip(), aula.strip()),
+                    "Aula": nombre_aula,
                     "Materia": str(val).strip() if ocupada else "", "Ocupada": ocupada
                 })
         return pd.DataFrame(filas)
@@ -129,79 +127,48 @@ def hay_traslape(ini1, fin1, ini2, fin2):
     return ini1 < fin2 and ini2 < fin1
 
 def get_estado_bloque(instalacion, dia_semana, h_ini, h_fin, df_h, df_r, fecha):
-    # 1. Check Horario Ciclo
     if df_h is not None:
         clases = df_h[(df_h["Aula"] == instalacion) & (df_h["Dia"] == dia_semana) & (df_h["Ocupada"] == True)]
         for _, row in clases.iterrows():
             if hay_traslape(h_ini, h_fin, row["HoraInicio"], row["HoraFin"]):
                 return "clase", row["Materia"]
 
-    # 2. Check Reservas Sheets
     if df_r is not None and fecha is not None:
-        try:
-            # Filtro por instalación y fecha
-            res = df_r[df_r["instalacion"] == instalacion]
-            for _, row in res.iterrows():
-                try:
-                    fecha_r = pd.to_datetime(row["fecha"], dayfirst=True).date()
-                    if fecha_r != fecha: continue
-                    if hay_traslape(h_ini, h_fin, row["hora_inicio"], row["hora_fin"]):
-                        return "reserva", f"{row['nombre']} — {row['actividad']}"
-                except: continue
-        except: pass
-    return "libre", "Disponible"
-
-def get_bloques_dia(instalacion, fecha, df_h, df_r):
-    dia_s = DIA_SEMANA.get(fecha.weekday(), "")
-    bloques = []
-    
-    # Bloques base del horario
-    if df_h is not None:
-        df_inst = df_h[(df_h["Aula"] == instalacion) & (df_h["Dia"] == dia_s)].sort_values("HoraInicio")
-        for _, row in df_inst.iterrows():
-            estado, detalle = get_estado_bloque(instalacion, dia_s, row["HoraInicio"], row["HoraFin"], df_h, df_r, fecha)
-            bloques.append({"hora": row["Hora"], "tipo": estado, "detalle": detalle, "h_ini": row["HoraInicio"]})
-    
-    # Agregar reservas de Sheets que no caen en bloques de horario
-    if df_r is not None:
-        res = df_r[(df_r["instalacion"] == instalacion)]
+        # Filtro de seguridad para la instalación
+        res = df_r[df_r["instalacion"] == instalacion]
         for _, row in res.iterrows():
             try:
                 fecha_r = pd.to_datetime(row["fecha"], dayfirst=True).date()
                 if fecha_r == fecha:
-                    # Si no hay un bloque en el horario que ya cubra esta hora exactamente
-                    if not any(b["h_ini"] == row["hora_inicio"] for b in bloques):
-                        bloques.append({
-                            "hora": f"{row['hora_inicio'].strftime('%H:%M')}-{row['hora_fin'].strftime('%H:%M')}",
-                            "tipo": "reserva", "detalle": f"{row['nombre']} — {row['actividad']}",
-                            "h_ini": row["hora_inicio"]
-                        })
+                    if hay_traslape(h_ini, h_fin, row["hora_inicio"], row["hora_fin"]):
+                        nombre = row.get('nombre', 'Anónimo')
+                        act = row.get('actividad', 'Sin descripción')
+                        return "reserva", f"{nombre} — {act}"
             except: continue
+    return "libre", "Disponible"
 
-    bloques.sort(key=lambda x: x["h_ini"] if x["h_ini"] else time(0,0))
-    return bloques
-
-# ─── INTERFAZ STREAMLIT ───────────────────────────────────────────────────────
+# ─── INTERFAZ ─────────────────────────────────────────────────────────────────
 
 df_horario = cargar_horario_github()
 df_reservas = cargar_reservas_sheets()
 
-# Sidebar
 with st.sidebar:
     st.header("📡 Estado")
     if df_horario is not None: st.success("Horario Cargado")
     else: st.error("Error Horario")
-    
-    if df_reservas is not None:
-        st.success(f"Reservas OK ({len(df_reservas)})")
-        if st.button("🔄 Refrescar Datos"):
-            st.cache_data.clear()
-            st.rerun()
-    else: st.warning("Sin Reservas")
+    if df_reservas is not None: st.success(f"Reservas OK ({len(df_reservas)})")
+    if st.button("🔄 Refrescar Datos"):
+        st.cache_data.clear()
+        st.rerun()
 
-# Main UI
 st.markdown("<h1 class='titulo'>Disponibilidad de Instalaciones</h1>", unsafe_allow_html=True)
-st.markdown("<div class='leyenda'><div class='leg-item'><div class='dot-v'></div> Libre</div><div class='leg-item'><div class='dot-c'></div> Clase</div><div class='leg-item'><div class='dot-r'></div> Reserva</div></div>", unsafe_allow_html=True)
+st.markdown("""
+<div class='leyenda'>
+    <div class='leg-item'><div class='dot-v'></div> Libre</div>
+    <div class='leg-item'><div class='dot-c'></div> Clase</div>
+    <div class='leg-item'><div class='dot-r'></div> Reserva</div>
+</div>
+""", unsafe_allow_html=True)
 
 tab1, tab2 = st.tabs(["📅 Por Fecha", "📊 Semanal"])
 
@@ -210,10 +177,21 @@ with tab1:
     inst = c1.selectbox("Seleccione Instalación", INSTALACIONES)
     fec = c2.date_input("Fecha", value=date.today())
     
-    bloques = get_bloques_dia(inst, fec, df_horario, df_reservas)
-    for b in bloques:
-        est = "libre" if b["tipo"]=="libre" else ("clase" if b["tipo"]=="clase" else "reserva")
-        st.markdown(f"<div class='{est}'><b>{b['hora']}</b> — {b['detalle']}</div>", unsafe_allow_html=True)
+    dia_s = DIA_SEMANA.get(fec.weekday(), "")
+    
+    # Obtener bloques base del horario para esta aula/día
+    bloques = []
+    if df_horario is not None:
+        df_inst = df_horario[(df_horario["Aula"] == inst) & (df_horario["Dia"] == dia_s)].sort_values("HoraInicio")
+        for _, row in df_inst.iterrows():
+            estado, detalle = get_estado_bloque(inst, dia_s, row["HoraInicio"], row["HoraFin"], df_horario, df_reservas, fec)
+            bloques.append({"hora": row["Hora"], "tipo": estado, "detalle": detalle})
+    
+    if not bloques:
+        st.info("No hay bloques de horario registrados para esta instalación en este día.")
+    else:
+        for b in bloques:
+            st.markdown(f"<div class='{b['tipo']}'><b>{b['hora']}</b> — {b['detalle']}</div>", unsafe_allow_html=True)
 
 with tab2:
     inst_s = st.selectbox("Seleccione Instalación", INSTALACIONES, key="s_inst")
@@ -223,14 +201,17 @@ with tab2:
     
     if df_horario is not None:
         horas_u = df_horario[df_horario["Aula"] == inst_s][["Hora", "HoraInicio", "HoraFin"]].drop_duplicates().sort_values("HoraInicio")
-        tabla = []
-        for _, h_row in horas_u.iterrows():
-            fila = {"Hora": h_row["Hora"]}
-            for d in dias:
-                col = f"{DIA_NOMBRE[d.weekday()]} {d.strftime('%d/%m')}"
-                est, det = get_estado_bloque(inst_s, DIA_SEMANA[d.weekday()], h_row["HoraInicio"], h_row["HoraFin"], df_horario, df_reservas, d)
-                if est == "libre": fila[col] = "✅"
-                elif est == "clase": fila[col] = "🔴 Clase"
-                else: fila[col] = "🟡 Reservado"
-            tabla.append(fila)
-        st.dataframe(pd.DataFrame(tabla).set_index("Hora"), use_container_width=True)
+        if not horas_u.empty:
+            tabla = []
+            for _, h_row in horas_u.iterrows():
+                fila = {"Hora": h_row["Hora"]}
+                for d in dias:
+                    col = f"{DIA_NOMBRE[d.weekday()]} {d.strftime('%d/%m')}"
+                    est, _ = get_estado_bloque(inst_s, DIA_SEMANA[d.weekday()], h_row["HoraInicio"], h_row["HoraFin"], df_horario, df_reservas, d)
+                    if est == "libre": fila[col] = "✅"
+                    elif est == "clase": fila[col] = "🔴 Clase"
+                    else: fila[col] = "🟡 Reservado"
+                tabla.append(fila)
+            st.dataframe(pd.DataFrame(tabla).set_index("Hora"), use_container_width=True)
+        else:
+            st.info("No hay datos de horario para esta aula.")
