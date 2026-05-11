@@ -4,64 +4,52 @@ import io
 import requests
 from datetime import datetime, date
 
-# --- CONFIGURACIÓN DE INTERFAZ ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="UPES - Disponibilidad", layout="wide")
 
+# Estilo visual
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Plus Jakarta Sans', sans-serif; }
-    .bloque-item { padding: 12px 18px; border-radius: 10px; margin-bottom: 8px; display: flex; align-items: center; font-size: 0.95rem; border: 1px solid transparent; }
-    .bloque-clase { background-color: #fff1f2; border-color: #fecdd3; color: #991b1b; }
-    .bloque-libre { background-color: #f0fdf4; border-color: #dcfce7; color: #166534; }
-    .bloque-reserva { background-color: #fefce8; border-color: #fef08a; color: #713f12; }
-    .time-text { font-weight: 700; margin-right: 12px; min-width: 95px; }
+    .bloque-item { padding: 12px; border-radius: 8px; margin-bottom: 5px; display: flex; align-items: center; border: 1px solid #ddd; }
+    .bloque-clase { background-color: #ffebee; color: #b71c1c; }
+    .bloque-libre { background-color: #e8f5e9; color: #1b5e20; }
+    .bloque-reserva { background-color: #fff9c4; color: #827717; border-color: #fbc02d; }
+    .time-text { font-weight: bold; margin-right: 15px; width: 100px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- LIMPIEZA DE DATOS ---
-def normalizar_aula(aula):
-    a = str(aula).strip().upper()
-    # Aseguramos que los nombres coincidan con los del selectbox
-    if "A-21" in a: return "A-21 C/ACONDICIONADO"
-    if "A-22" in a: return "A-22 C/ACONDICIONADO"
-    if "A-34" in a: return "A-34 (MESAS DE DIBUJO)"
-    return a
+def limpiar_aula(txt):
+    """Elimina todo lo que no sea letra o número para comparar A-11 con A11"""
+    if pd.isna(txt): return ""
+    return "".join(filter(str.isalnum, str(txt))).upper()
 
-# --- CARGA DE DATOS DESDE EL ENLACE ---
 @st.cache_data(ttl=30)
 def cargar_reservas():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
     try:
         response = requests.get(url)
-        content = response.content.decode('utf-8').splitlines()
-        
-        # BUSCAR LA CABECERA REAL (Ignora la 'f' y filas vacías)
-        header_idx = 0
-        for i, line in enumerate(content):
+        # Forzar la lectura saltando cualquier basura inicial hasta encontrar "Marca temporal"
+        lines = response.content.decode('utf-8').splitlines()
+        for i, line in enumerate(lines):
             if "Marca temporal" in line:
-                header_idx = i
+                df = pd.read_csv(io.StringIO("\n".join(lines[i:])))
                 break
         
-        df = pd.read_csv(io.StringIO("\n".join(content[header_idx:])))
+        # Limpieza agresiva de nombres de columnas
+        df.columns = [c.replace('\n', ' ').strip() for c in df.columns]
         
-        # Limpiar espacios en los nombres de las columnas
-        df.columns = [c.strip() for c in df.columns]
+        # Mapeo manual por posición si los nombres fallan (basado en tu CSV)
+        # 3: Nombre, 4: Actividad, 6: Fecha, 7: Aula, 8: Inicio, 9: Fin
+        df_new = pd.DataFrame()
+        df_new['nombre'] = df.iloc[:, 3]
+        df_new['actividad'] = df.iloc[:, 4]
+        df_new['fecha'] = df.iloc[:, 6]
+        df_new['aula'] = df.iloc[:, 7]
+        df_new['h_ini'] = df.iloc[:, 8]
+        df_new['h_fin'] = df.iloc[:, 9]
         
-        # Mapeo flexible de columnas por palabras clave
-        mapping = {}
-        for c in df.columns:
-            low = c.lower()
-            if "fecha" in low: mapping[c] = "fecha"
-            elif "instalación" in low or "instalacion" in low: mapping[c] = "aula"
-            elif "inicio" in low: mapping[c] = "h_ini"
-            elif "finalización" in low or "fin" in low: mapping[c] = "h_fin"
-            elif "actividad" in low: mapping[c] = "actividad"
-            elif "nombre" in low: mapping[c] = "nombre"
-            
-        return df.rename(columns=mapping)
-    except:
-        return None
+        return df_new
+    except: return None
 
 @st.cache_data(ttl=3600)
 def cargar_horario():
@@ -73,71 +61,59 @@ def cargar_horario():
         df_raw["Hora"] = df_raw["Hora"].ffill()
         
         filas = []
-        aulas_col = [c for c in df_raw.columns if c not in ["Dia", "Hora"]]
         for _, row in df_raw.iterrows():
-            h_raw = str(row["Hora"]).replace("–", "-").strip()
+            h_str = str(row["Hora"]).replace("–", "-").strip()
             try:
-                p = h_raw.split("-")
-                h_ini = datetime.strptime(p[0].strip(), "%H:%M").time()
-                h_fin = datetime.strptime(p[1].strip(), "%H:%M").time()
-                for a in aulas_col:
-                    val = row[a]
-                    ocupada = not (pd.isna(val) or str(val).strip() == "")
+                h_ini = datetime.strptime(h_str.split("-")[0].strip(), "%H:%M").time()
+                h_fin = datetime.strptime(h_str.split("-")[1].strip(), "%H:%M").time()
+                for aula in [c for c in df_raw.columns if c not in ["Dia", "Hora"]]:
+                    val = row[aula]
+                    ocupado = not (pd.isna(val) or str(val).strip() == "")
                     filas.append({
                         "Dia": str(row["Dia"]).strip(),
-                        "Hora": h_raw, "H_Ini": h_ini, "H_Fin": h_fin,
-                        "Aula": normalizar_aula(a),
-                        "Detalle": str(val).strip() if ocupada else "Libre",
-                        "Ocupada": ocupada
+                        "Hora": h_str, "H_Ini": h_ini, "H_Fin": h_fin,
+                        "Aula": str(aula).strip().upper(),
+                        "AulaID": limpiar_aula(aula),
+                        "Detalle": str(val).strip() if ocupado else "Libre",
+                        "Ocupada": ocupado
                     })
             except: continue
         return pd.DataFrame(filas)
     except: return None
 
-# --- UI ---
+# --- EJECUCIÓN ---
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
-st.title("🔍 Consultar disponibilidad")
+st.title("🔍 Disponibilidad UPES")
 
-c1, c2 = st.columns(2)
-with c1:
-    inst_sel = st.selectbox("Instalación", ["A-11", "A-12", "A-13", "A-14", "A-15", "A-16", "A-21 C/ACONDICIONADO", "A-22 C/ACONDICIONADO", "A-31", "A-32", "A-33", "A-34 (MESAS DE DIBUJO)", "SUM", "BIBLIOTECA"])
-with c2:
-    fecha_sel = st.date_input("Fecha", value=date.today())
+aula_sel = st.selectbox("Instalación", ["A-11", "A-12", "A-13", "A-14", "A-15", "A-16", "A-21 C/ACONDICIONADO", "A-22 C/ACONDICIONADO", "SUM", "BIBLIOTECA"])
+fecha_sel = st.date_input("Fecha", value=date.today())
 
-dia_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
+dias = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
 
 if df_h is not None:
-    bloques = df_h[(df_h["Aula"] == inst_sel.upper()) & (df_h["Dia"] == dia_map[fecha_sel.weekday()])]
-    st.write(f"### {inst_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
-
+    bloques = df_h[(df_h["AulaID"] == limpiar_aula(aula_sel)) & (df_h["Dia"] == dias[fecha_sel.weekday()])]
+    
     for _, row in bloques.iterrows():
         tipo, icono, detalle = ("clase", "🔴", row["Detalle"]) if row["Ocupada"] else ("libre", "✅", "Libre")
         
-        # VALIDACIÓN DE RESERVA
+        # VALIDAR RESERVA (Comparación Flexible)
         if not row["Ocupada"] and df_r is not None:
             for _, res in df_r.iterrows():
                 try:
-                    # En el CSV la fecha viene como YYYY-MM-DD (2026-05-11)
-                    r_fecha = pd.to_datetime(res["fecha"]).date()
-                    r_aula = normalizar_aula(res["aula"])
-                    
-                    if r_fecha == fecha_sel and inst_sel.upper() in r_aula:
-                        # Limpiamos las horas (solo tomamos HH:MM e ignoramos segundos)
-                        h_res_ini = datetime.strptime(str(res["h_ini"]).strip()[:5], "%H:%M").time()
-                        h_res_fin = datetime.strptime(str(res["h_fin"]).strip()[:5], "%H:%M").time()
+                    # Fecha: Soporta 2026-05-11 y 11/05/2026
+                    r_fecha = pd.to_datetime(res['fecha']).date()
+                    # Aula: Compara "A11" con "A11" (sin guiones ni espacios)
+                    if r_fecha == fecha_sel and limpiar_aula(res['aula']) == limpiar_aula(aula_sel):
+                        # Hora: Corta los segundos (08:00:00 -> 08:00)
+                        r_ini = datetime.strptime(str(res['h_ini'])[:5], "%H:%M").time()
+                        r_fin = datetime.strptime(str(res['h_fin'])[:5], "%H:%M").time()
                         
-                        # Cruce de horarios
-                        if row["H_Ini"] < h_res_fin and h_res_ini < row["H_Fin"]:
+                        if row["H_Ini"] < r_fin and r_ini < row["H_Fin"]:
                             tipo, icono = "reserva", "🟡"
                             detalle = f"RESERVA: {res['actividad']} ({res['nombre']})"
                             break
                 except: continue
 
-        st.markdown(f"""
-            <div class="bloque-item bloque-{tipo}">
-                <div style="margin-right:10px">{icono}</div>
-                <span class="time-text">{row['Hora']}</span> — {detalle}
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f'<div class="bloque-item bloque-{tipo}"> <span class="time-text">{icono} {row["Hora"]}</span> {detalle}</div>', unsafe_allow_html=True)
