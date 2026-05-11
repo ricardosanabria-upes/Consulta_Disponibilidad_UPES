@@ -3,18 +3,17 @@ import pandas as pd
 import io
 from datetime import datetime, date, time
 
-# 1. Configuración Básica
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="UPES Disponibilidad", layout="wide")
 
 st.markdown("""
 <style>
-    .libre   { background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:10px; margin:5px 0; color:#166534; }
-    .clase   { background:#fef2f2; border:1px solid #fca5a5; border-radius:10px; padding:10px; margin:5px 0; color:#991b1b; }
-    .reserva { background:#fff9db; border:1px solid #fcc419; border-radius:10px; padding:10px; margin:5px 0; color:#856404; }
+    .libre   { background:#f0fdf4; border:1px solid #86efac; border-radius:10px; padding:12px; margin:5px 0; color:#166534; }
+    .clase   { background:#fef2f2; border:1px solid #fca5a5; border-radius:10px; padding:12px; margin:5px 0; color:#991b1b; }
+    .reserva { background:#fff9db; border:1px solid #fcc419; border-radius:10px; padding:12px; margin:5px 0; color:#856404; }
 </style>
 """, unsafe_allow_html=True)
 
-# 2. Enlaces
 URL_SHEETS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
 URL_GITHUB = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
 
@@ -26,35 +25,33 @@ INSTALACIONES = [
     "SUM", "Sala de juntas", "Pasillos", "Biblioteca"
 ]
 
-# 3. Carga de Datos de Google Sheets (Búsqueda por palabras clave)
+# --- CARGA DE RESERVAS (SHEETS) ---
 @st.cache_data(ttl=60)
 def cargar_reservas():
     try:
-        # Forzar lectura ignorando errores de formato inicial
+        # Cargamos saltando la fila de título del Excel
         df = pd.read_csv(URL_SHEETS, skiprows=1)
+        # Limpiamos nombres de columnas (quitar saltos de línea y espacios)
         df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
         
-        # Mapa para encontrar columnas críticas sin importar el nombre exacto
+        # Sistema de detección inteligente de columnas
         mapeo = {}
-        for col in df.columns:
-            c = col.lower()
-            if "instalación" in c or "instalacion" in c: mapeo[col] = "aula"
-            elif "fecha" in c: mapeo[col] = "fecha"
-            elif "inicio" in c: mapeo[col] = "h_ini"
-            elif "finalización" in c or "finalizacion" in c: mapeo[col] = "h_fin"
-            elif "solicitante" in c: mapeo[col] = "nombre"
+        for c in df.columns:
+            low = c.lower()
+            if "instalación" in low or "instalacion" in low: mapeo[c] = "aula"
+            elif "fecha" in low: mapeo[c] = "fecha"
+            elif "inicio" in low: mapeo[c] = "h_ini"
+            elif "finalización" in low or "finalizacion" in low: mapeo[c] = "h_fin"
+            elif "nombre" in low: mapeo[c] = "usuario"
         
         df = df.rename(columns=mapeo)
         
-        # Asegurar que existan las columnas mínimas
-        for col_nec in ["aula", "fecha", "h_ini", "h_fin"]:
-            if col_nec not in df.columns: return pd.DataFrame()
+        # Limpiar datos de aula y tiempos
+        if "aula" in df.columns:
+            df["aula"] = df["aula"].astype(str).str.strip()
+            # Unificar nombres (ej: "A-21" a "A-21 C/Acondicionado")
+            df["aula"] = df["aula"].replace({"A-21": "A-21 C/Acondicionado", "A-22": "A-22 C/Acondicionado", "A-34": "A-34 (Mesas de dibujo)"})
 
-        # Limpiar Aulas (Compatibilidad con el formulario)
-        df["aula"] = df["aula"].astype(str).str.strip()
-        df["aula"] = df["aula"].replace({"A-21": "A-21 C/Acondicionado", "A-22": "A-22 C/Acondicionado", "A-34": "A-34 (Mesas de dibujo)"})
-
-        # Convertir tiempos
         df["fecha_dt"] = pd.to_datetime(df["fecha"], dayfirst=True, errors='coerce').dt.date
         df["h_ini_dt"] = pd.to_datetime(df["h_ini"], errors='coerce').dt.time
         df["h_fin_dt"] = pd.to_datetime(df["h_fin"], errors='coerce').dt.time
@@ -63,7 +60,7 @@ def cargar_reservas():
     except:
         return pd.DataFrame()
 
-# 4. Carga de Horario GitHub
+# --- CARGA DE HORARIO (GITHUB) ---
 @st.cache_data(ttl=3600)
 def cargar_horario():
     try:
@@ -74,13 +71,13 @@ def cargar_horario():
         df_raw["Hora"] = df_raw["Hora"].ffill()
         
         lista = []
-        aulas = [c for c in df_raw.columns if c not in ["Dia", "Hora"]]
+        aulas_cols = [c for c in df_raw.columns if c not in ["Dia", "Hora"]]
         for _, row in df_raw.iterrows():
             try:
                 h_txt = str(row["Hora"]).replace("–", "-")
                 h_ini = datetime.strptime(h_txt.split("-")[0].strip(), "%H:%M").time()
                 h_fin = datetime.strptime(h_txt.split("-")[1].strip(), "%H:%M").time()
-                for a in aulas:
+                for a in aulas_cols:
                     val = str(row[a]).strip()
                     es_clase = val != "" and val.lower() != "nan"
                     lista.append({
@@ -91,42 +88,42 @@ def cargar_horario():
         return pd.DataFrame(lista)
     except: return None
 
-# 5. Interfaz y Lógica de Bloques
-st.title("🏫 Sistema de Disponibilidad UPES")
+# --- INTERFAZ ---
+st.title("🏫 Control de Disponibilidad UPES")
 
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
 c1, c2 = st.columns(2)
-aula_sel = c1.selectbox("Aula", INSTALACIONES)
+aula_sel = c1.selectbox("Seleccione Instalación", INSTALACIONES)
 fecha_sel = c2.date_input("Fecha", value=date.today())
 
 DIAS = {0: "1.Lunes", 1: "2.Martes", 2: "3.Miercoles", 3: "4.Jueves", 4: "5.Viernes", 5: "6.Sabado", 6: "7.Domingo"}
 dia_nombre = DIAS.get(fecha_sel.weekday())
 
 if df_h is not None:
-    # Bloques de tiempo fijos para esta aula
+    # Obtener bloques para el aula seleccionada (comparación parcial por si acaso)
     bloques = df_h[df_h["aula"].str.contains(aula_sel.split()[0])].drop_duplicates(subset=["hora_t"]).sort_values("hi")
     
     for _, b in bloques.iterrows():
-        est = "libre"
-        det = "Disponible"
+        est, det = "libre", "Disponible"
         
-        # Prioridad 1: Clase
-        match_c = df_h[(df_h["aula"].str.contains(aula_sel.split()[0])) & (df_h["dia"] == dia_nombre) & (df_h["hora_t"] == b["hora_t"]) & (df_h["tipo"] == "clase")]
-        if not match_c.empty:
-            est, det = "clase", match_c.iloc[0]["detalle"]
+        # 1. Verificar si hay clase
+        match_clase = df_h[(df_h["aula"].str.contains(aula_sel.split()[0])) & (df_h["dia"] == dia_nombre) & (df_h["hora_t"] == b["hora_t"]) & (df_h["tipo"] == "clase")]
+        if not match_clase.empty:
+            est, det = "clase", match_clase.iloc[0]["detalle"]
         else:
-            # Prioridad 2: Reserva
+            # 2. Verificar si hay reserva
             if not df_r.empty:
-                m_res = df_r[(df_r["aula"] == aula_sel) & (df_r["fecha_dt"] == fecha_sel)]
-                for _, r in m_res.iterrows():
+                reservas_dia = df_r[(df_r["aula"] == aula_sel) & (df_r["fecha_dt"] == fecha_sel)]
+                for _, r in reservas_dia.iterrows():
+                    # Comprobar traslape
                     if (b["hi"] < r["h_fin_dt"]) and (r["h_ini_dt"] < b["hf"]):
-                        est, det = "reserva", f"RESERVA: {r.get('nombre', 'Solicitante')}"
+                        est, det = "reserva", f"RESERVA: {r.get('usuario', 'Solicitante')}"
                         break
         
         st.markdown(f"<div class='{est}'><b>{b['hora_t']}</b> — {det}</div>", unsafe_allow_html=True)
 
-with st.expander("Ver Datos Crudos (Debug)"):
-    st.write("Reservas detectadas:", len(df_r))
+with st.expander("🛠️ Depuración de Datos"):
+    st.write("Reservas detectadas en Sheets:", len(df_r))
     st.dataframe(df_r)
