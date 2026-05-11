@@ -47,7 +47,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
-GOOGLE_SHEET_URL = st.secrets.get("SHEETS_URL", "")
+try:
+    GOOGLE_SHEET_URL = st.secrets["SHEETS_URL"]
+except Exception:
+    GOOGLE_SHEET_URL = ""
 
 EXCEL_GITHUB_URL = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
 
@@ -339,6 +342,8 @@ with st.sidebar:
             st.rerun()
     else:
         st.warning("⚠️ No se pudieron cargar las reservas de Google Sheets")
+        if not GOOGLE_SHEET_URL:
+            st.error("❌ URL de Google Sheets no configurada en Secrets")
 
     st.markdown("---")
     st.markdown(
