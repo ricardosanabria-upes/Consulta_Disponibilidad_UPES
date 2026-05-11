@@ -425,101 +425,123 @@ with tab_dia:
 with tab_semana:
     inst_s = st.selectbox("🏛 Instalación", INSTALACIONES, key="inst_s")
 
-    # Semana actual
     hoy = date.today()
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     dias_semana = [inicio_semana + timedelta(days=i) for i in range(6)]  # Lun-Sab
 
     st.markdown(f"### {inst_s} — Semana del {inicio_semana.strftime('%d/%m')} al {(inicio_semana + timedelta(days=5)).strftime('%d/%m/%Y')}")
 
-    # Obtener todos los bloques horarios únicos del Excel
-    if df_horario is not None:
+    if df_horario is None:
+        st.info("No se pudo cargar el horario del ciclo.")
+    else:
         df_inst_h = df_horario[df_horario["Aula"] == inst_s].copy()
         horas_unicas = df_inst_h[["Hora", "HoraInicio", "HoraFin"]].drop_duplicates().sort_values("HoraInicio")
-    else:
-        horas_unicas = pd.DataFrame(columns=["Hora", "HoraInicio", "HoraFin"])
 
-    if horas_unicas.empty:
-        st.info("Sube el Excel del horario para ver la vista semanal.")
-    else:
-        # Construir tabla
-        tabla = []
+        cols_dias = []
+        for d in dias_semana:
+            dia_nom = DIA_NOMBRE.get(d.weekday(), "")
+            cols_dias.append((d, f"{dia_nom}\n{d.strftime('%d/%m')}"))
+
+        # ── TABLA 1: Horario de clases del ciclo ─────────────────────────────
+        st.markdown("#### 🔴 Horario de clases del ciclo")
+        tabla_clases = []
         for _, hora_row in horas_unicas.iterrows():
             fila = {"Hora": hora_row["Hora"]}
-            for dia_fecha in dias_semana:
+            for dia_fecha, col_key in cols_dias:
                 dia_semana_key = DIA_SEMANA.get(dia_fecha.weekday(), "")
-                dia_nom = DIA_NOMBRE.get(dia_fecha.weekday(), "")
-                col_key = f"{dia_nom}\n{dia_fecha.strftime('%d/%m')}"
-
-                if hora_row["HoraInicio"] is None or hora_row["HoraFin"] is None:
+                if hora_row["HoraInicio"] is None:
                     fila[col_key] = "—"
                     continue
-
                 estado, detalle = get_estado_bloque(
                     inst_s, dia_semana_key,
                     hora_row["HoraInicio"], hora_row["HoraFin"],
                     df_horario, None, dia_fecha
                 )
-
-                # Si el ciclo dice libre, verificar reservas por fecha exacta
-                if estado == "libre" and df_reservas is not None and "fecha_date" in df_reservas.columns:
-                    c_inst = next((c for c in df_reservas.columns if c == "instalacion"), None)
-                    c_nom  = next((c for c in df_reservas.columns if c == "nombre"), None)
-                    c_act  = next((c for c in df_reservas.columns if c == "actividad"), None)
-                    if c_inst:
-                        filtradas = df_reservas[
-                            (df_reservas[c_inst].astype(str).str.strip() == inst_s) &
-                            (df_reservas["fecha_date"] == dia_fecha)
-                        ]
-                        for _, rrow in filtradas.iterrows():
-                            ini_r = rrow.get("hora_inicio_t")
-                            fin_r = rrow.get("hora_fin_t")
-                            if ini_r is None or fin_r is None:
-                                continue
-                            if hay_traslape(hora_row["HoraInicio"], hora_row["HoraFin"], ini_r, fin_r):
-                                nom = str(rrow[c_nom]) if c_nom else "—"
-                                act = str(rrow[c_act]) if c_act and rrow[c_act] not in ("nan", "") else ""
-                                estado = "reserva"
-                                detalle = f"{nom}{' — ' + act if act else ''}"
-                                break
-
-                if estado == "libre":
-                    fila[col_key] = "✅ Libre"
-                elif estado == "clase":
-                    mat = detalle.split("—")[0].strip() if "—" in detalle else detalle
+                if estado == "clase":
+                    mat = detalle.split("—")[0].strip()
                     fila[col_key] = f"🔴 {mat[:30]}"
                 else:
-                    fila[col_key] = f"🟡 {detalle[:35]}"
+                    fila[col_key] = "✅ Libre"
+            tabla_clases.append(fila)
 
-            tabla.append(fila)
+        df_clases = pd.DataFrame(tabla_clases).set_index("Hora")
 
-        df_tabla = pd.DataFrame(tabla).set_index("Hora")
-
-        def color_celda(val):
-            if str(val).startswith("✅"):
-                return "background-color: #f0fdf4; color: #166534;"
-            elif str(val).startswith("🔴"):
+        def color_clases(val):
+            if str(val).startswith("🔴"):
                 return "background-color: #fef2f2; color: #991b1b;"
-            elif str(val).startswith("🟡"):
-                return "background-color: #fefce8; color: #713f12;"
+            elif str(val).startswith("✅"):
+                return "background-color: #f0fdf4; color: #166534;"
             return ""
 
         st.dataframe(
-            df_tabla.style.map(color_celda),
+            df_clases.style.map(color_clases),
             use_container_width=True,
-            height=380
+            height=350
         )
 
-        # Resumen de la semana
-        st.markdown("---")
-        total_bloques = df_tabla.size
-        libres_s  = df_tabla.apply(lambda col: col.str.startswith("✅")).sum().sum()
-        clases_s  = df_tabla.apply(lambda col: col.str.startswith("🔴")).sum().sum()
-        reservas_s = df_tabla.apply(lambda col: col.str.startswith("🟡")).sum().sum()
-        pct = round(libres_s / total_bloques * 100) if total_bloques else 0
+        # ── TABLA 2: Reservas de eventos ──────────────────────────────────────
+        st.markdown("#### 🟡 Reservas de eventos")
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total bloques", total_bloques)
-        m2.metric("✅ Libres", libres_s)
-        m3.metric("🔴 Clases", clases_s)
-        m4.metric("🟡 Reservados", reservas_s)
+        if df_reservas is None or "fecha_date" not in df_reservas.columns:
+            st.info("No hay datos de reservas disponibles.")
+        else:
+            c_inst = next((c for c in df_reservas.columns if c == "instalacion"), None)
+            c_nom  = next((c for c in df_reservas.columns if c == "nombre"), None)
+            c_act  = next((c for c in df_reservas.columns if c == "actividad"), None)
+
+            tabla_res = []
+            for _, hora_row in horas_unicas.iterrows():
+                fila = {"Hora": hora_row["Hora"]}
+                for dia_fecha, col_key in cols_dias:
+                    if hora_row["HoraInicio"] is None or c_inst is None:
+                        fila[col_key] = "—"
+                        continue
+                    filtradas = df_reservas[
+                        (df_reservas[c_inst].astype(str).str.strip() == inst_s) &
+                        (df_reservas["fecha_date"] == dia_fecha)
+                    ]
+                    encontrado = False
+                    for _, rrow in filtradas.iterrows():
+                        ini_r = rrow.get("hora_inicio_t")
+                        fin_r = rrow.get("hora_fin_t")
+                        if ini_r is None or fin_r is None:
+                            continue
+                        if hay_traslape(hora_row["HoraInicio"], hora_row["HoraFin"], ini_r, fin_r):
+                            nom = str(rrow[c_nom]) if c_nom else "—"
+                            act = str(rrow[c_act]) if c_act and str(rrow[c_act]) not in ("nan", "") else ""
+                            texto = f"🟡 {nom}"
+                            if act:
+                                texto += f" — {act[:20]}"
+                            fila[col_key] = texto[:40]
+                            encontrado = True
+                            break
+                    if not encontrado:
+                        fila[col_key] = "✅ Libre"
+                tabla_res.append(fila)
+
+            df_res = pd.DataFrame(tabla_res).set_index("Hora")
+
+            def color_reservas(val):
+                if str(val).startswith("🟡"):
+                    return "background-color: #fefce8; color: #713f12;"
+                elif str(val).startswith("✅"):
+                    return "background-color: #f0fdf4; color: #166534;"
+                return ""
+
+            st.dataframe(
+                df_res.style.map(color_reservas),
+                use_container_width=True,
+                height=350
+            )
+
+        # ── Resumen ───────────────────────────────────────────────────────────
+        st.markdown("---")
+        total = df_clases.size
+        clases_s  = df_clases.apply(lambda col: col.str.startswith("🔴")).sum().sum()
+        libres_s  = total - clases_s
+        reservas_s = df_res.apply(lambda col: col.str.startswith("🟡")).sum().sum() if df_reservas is not None else 0
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("✅ Bloques libres", libres_s)
+        m2.metric("🔴 Clases", clases_s)
+        m3.metric("🟡 Con reserva", reservas_s)
