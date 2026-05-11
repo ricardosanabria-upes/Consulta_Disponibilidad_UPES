@@ -22,6 +22,7 @@ st.markdown("""
 # --- LIMPIEZA DE DATOS ---
 def normalizar_aula(aula):
     a = str(aula).strip().upper()
+    # Aseguramos que los nombres coincidan con los del selectbox
     if "A-21" in a: return "A-21 C/ACONDICIONADO"
     if "A-22" in a: return "A-22 C/ACONDICIONADO"
     if "A-34" in a: return "A-34 (MESAS DE DIBUJO)"
@@ -35,28 +36,28 @@ def cargar_reservas():
         response = requests.get(url)
         content = response.content.decode('utf-8').splitlines()
         
-        # 1. Saltar filas basura hasta encontrar los encabezados reales
-        start_idx = 0
+        # BUSCAR LA CABECERA REAL (Ignora la 'f' y filas vacías)
+        header_idx = 0
         for i, line in enumerate(content):
             if "Marca temporal" in line:
-                start_idx = i
+                header_idx = i
                 break
         
-        df = pd.read_csv(io.StringIO("\n".join(content[start_idx:])))
+        df = pd.read_csv(io.StringIO("\n".join(content[header_idx:])))
         
-        # 2. Limpieza extrema de nombres de columnas (quitar espacios locos)
+        # Limpiar espacios en los nombres de las columnas
         df.columns = [c.strip() for c in df.columns]
         
-        # 3. Mapeo flexible de columnas por palabras clave
+        # Mapeo flexible de columnas por palabras clave
         mapping = {}
         for c in df.columns:
             low = c.lower()
             if "fecha" in low: mapping[c] = "fecha"
             elif "instalación" in low or "instalacion" in low: mapping[c] = "aula"
             elif "inicio" in low: mapping[c] = "h_ini"
-            elif "finalización" in low or "finalizacion" in low or "fin" in low: mapping[c] = "h_fin"
+            elif "finalización" in low or "fin" in low: mapping[c] = "h_fin"
             elif "actividad" in low: mapping[c] = "actividad"
-            elif "nombre" in low or "solicitante" in low: mapping[c] = "nombre"
+            elif "nombre" in low: mapping[c] = "nombre"
             
         return df.rename(columns=mapping)
     except:
@@ -93,7 +94,7 @@ def cargar_horario():
         return pd.DataFrame(filas)
     except: return None
 
-# --- UI Y LÓGICA ---
+# --- UI ---
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
@@ -108,27 +109,26 @@ with c2:
 dia_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
 
 if df_h is not None:
-    # Filtrar clases del Excel
     bloques = df_h[(df_h["Aula"] == inst_sel.upper()) & (df_h["Dia"] == dia_map[fecha_sel.weekday()])]
     st.write(f"### {inst_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
 
     for _, row in bloques.iterrows():
         tipo, icono, detalle = ("clase", "🔴", row["Detalle"]) if row["Ocupada"] else ("libre", "✅", "Libre")
         
-        # VALIDAR CONTRA RESERVAS DEL ENLACE
+        # VALIDACIÓN DE RESERVA
         if not row["Ocupada"] and df_r is not None:
             for _, res in df_r.iterrows():
                 try:
-                    # En tu CSV la fecha viene como YYYY-MM-DD
+                    # En el CSV la fecha viene como YYYY-MM-DD (2026-05-11)
                     r_fecha = pd.to_datetime(res["fecha"]).date()
                     r_aula = normalizar_aula(res["aula"])
                     
                     if r_fecha == fecha_sel and inst_sel.upper() in r_aula:
-                        # Extraer hora (tomamos solo los primeros 5 caracteres para ignorar segundos)
+                        # Limpiamos las horas (solo tomamos HH:MM e ignoramos segundos)
                         h_res_ini = datetime.strptime(str(res["h_ini"]).strip()[:5], "%H:%M").time()
                         h_res_fin = datetime.strptime(str(res["h_fin"]).strip()[:5], "%H:%M").time()
                         
-                        # Si hay traslape de horario
+                        # Cruce de horarios
                         if row["H_Ini"] < h_res_fin and h_res_ini < row["H_Fin"]:
                             tipo, icono = "reserva", "🟡"
                             detalle = f"RESERVA: {res['actividad']} ({res['nombre']})"
