@@ -201,4 +201,36 @@ with st.sidebar:
 
 # Main UI
 st.markdown("<h1 class='titulo'>Disponibilidad de Instalaciones</h1>", unsafe_allow_html=True)
-st.markdown("<div class='leyenda'><div class='leg-item'><div class='dot-v'></div> Libre</div><div class='leg-item'><div class='dot-
+st.markdown("<div class='leyenda'><div class='leg-item'><div class='dot-v'></div> Libre</div><div class='leg-item'><div class='dot-c'></div> Clase</div><div class='leg-item'><div class='dot-r'></div> Reserva</div></div>", unsafe_allow_html=True)
+
+tab1, tab2 = st.tabs(["📅 Por Fecha", "📊 Semanal"])
+
+with tab1:
+    c1, c2 = st.columns(2)
+    inst = c1.selectbox("Seleccione Instalación", INSTALACIONES)
+    fec = c2.date_input("Fecha", value=date.today())
+    
+    bloques = get_bloques_dia(inst, fec, df_horario, df_reservas)
+    for b in bloques:
+        est = "libre" if b["tipo"]=="libre" else ("clase" if b["tipo"]=="clase" else "reserva")
+        st.markdown(f"<div class='{est}'><b>{b['hora']}</b> — {b['detalle']}</div>", unsafe_allow_html=True)
+
+with tab2:
+    inst_s = st.selectbox("Seleccione Instalación", INSTALACIONES, key="s_inst")
+    hoy = date.today()
+    inicio = hoy - timedelta(days=hoy.weekday())
+    dias = [inicio + timedelta(days=i) for i in range(6)]
+    
+    if df_horario is not None:
+        horas_u = df_horario[df_horario["Aula"] == inst_s][["Hora", "HoraInicio", "HoraFin"]].drop_duplicates().sort_values("HoraInicio")
+        tabla = []
+        for _, h_row in horas_u.iterrows():
+            fila = {"Hora": h_row["Hora"]}
+            for d in dias:
+                col = f"{DIA_NOMBRE[d.weekday()]} {d.strftime('%d/%m')}"
+                est, det = get_estado_bloque(inst_s, DIA_SEMANA[d.weekday()], h_row["HoraInicio"], h_row["HoraFin"], df_horario, df_reservas, d)
+                if est == "libre": fila[col] = "✅"
+                elif est == "clase": fila[col] = "🔴 Clase"
+                else: fila[col] = "🟡 Reservado"
+            tabla.append(fila)
+        st.dataframe(pd.DataFrame(tabla).set_index("Hora"), use_container_width=True)
