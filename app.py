@@ -4,7 +4,7 @@ import io
 import requests
 from datetime import datetime, date
 
-# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
+# ─── CONFIGURACIÓN VISUAL ─────────────────────────────────────────────────────
 st.set_page_config(page_title="UPES - Control de Aulas", layout="wide")
 
 st.markdown("""
@@ -26,6 +26,8 @@ def cargar_datos():
         r = requests.get(url_res).text.splitlines()
         idx = next(i for i, line in enumerate(r) if "Marca temporal" in line)
         tmp = pd.read_csv(io.StringIO("\n".join(r[idx:])))
+        
+        # PROCESAMIENTO CRÍTICO DE FECHA: Forzamos día primero para evitar el error de mes/día
         df_res = pd.DataFrame({
             'act': tmp.iloc[:, 4],
             'fec': pd.to_datetime(tmp.iloc[:, 6], dayfirst=True, errors='coerce').dt.date,
@@ -36,17 +38,16 @@ def cargar_datos():
         })
     except: pass
 
-    # 2. HORARIO (GITHUB)
+    # 2. HORARIO BASE (GITHUB)
     url_hor = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
     df_hor = pd.DataFrame()
     aulas = []
     try:
         resp = requests.get(url_hor)
         xl = pd.read_excel(io.BytesIO(resp.content))
-        # Rellenar días y horas hacia abajo
         xl["Dia"] = xl["Dia"].ffill()
         xl["Hora"] = xl["Hora"].ffill()
-        # Aulas son todas las columnas excepto Dia y Hora
+        # Filtramos columnas para que NO aparezcan "Dia" o "Hora" en la lista de selección
         aulas = [c for c in xl.columns if str(c).strip() not in ["Dia", "Hora", "DIA", "HORA"]]
         df_hor = xl
     except: pass
@@ -59,47 +60,48 @@ df_r, df_h, lista_aulas = cargar_datos()
 st.title("🏫 Control de Aulas UPES")
 
 if not lista_aulas:
-    st.error("No se pudo cargar el horario de GitHub.")
+    st.error("No se pudo cargar el archivo de Excel. Revisa el enlace de GitHub.")
 else:
     c1, c2 = st.columns(2)
-    aula_sel = c1.selectbox("Seleccione Aula", lista_aulas)
-    fecha_sel = c2.date_input("Fecha", value=date.today())
+    # Seleccionamos aula del menú limpio
+    aula_sel = c1.selectbox("Seleccione la Instalación", lista_aulas)
+    fecha_sel = c2.date_input("Fecha de consulta", value=date.today())
 
-    # Mapeo de día (debe coincidir con el Excel)
-    dias_nombres = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
-    dia_str = dias_nombres[fecha_sel.weekday()]
+    # Mapeo de días flexible
+    nombres_dias = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+    dia_buscado = nombres_dias[fecha_sel.weekday()]
 
     st.subheader(f"Disponibilidad: {aula_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
 
-    # Filtrar el Excel por el día seleccionado (buscamos la palabra del día en la columna Dia)
-    # Usamos .str.contains por si en el excel dice "1.Lunes"
-    horario_dia = df_h[df_h["Dia"].astype(str).str.contains(dia_str, case=False, na=False)]
+    # Filtrar el horario base por el día seleccionado
+    bloques_dia = df_h[df_h["Dia"].astype(str).str.contains(dia_buscado, case=False, na=False)]
 
-    if horario_dia.empty:
-        st.warning(f"No hay clases programadas para el día {dia_str}.")
+    if bloques_dia.empty:
+        st.warning(f"No hay bloques definidos para el día {dia_buscado}.")
     else:
-        for _, row in horario_dia.iterrows():
-            hora_bloque = str(row["Hora"]).replace("–", "-").strip()
-            valor_celda = row[aula_sel]
+        for _, row in bloques_dia.iterrows():
+            hora_str = str(row["Hora"]).replace("–", "-").strip()
+            detalle_excel = row[aula_sel]
             
-            # Estado inicial según el Excel
-            esta_ocupado = not (pd.isna(valor_celda) or str(valor_celda).strip() == "")
-            tipo = "clase" if esta_ocupado else "libre"
-            icono = "🔴" if esta_ocupado else "✅"
-            detalle = str(valor_celda) if esta_ocupado else "Libre"
+            # 1. Determinar estado inicial (Excel)
+            ocupado_excel = not (pd.isna(detalle_excel) or str(detalle_excel).strip() == "")
+            tipo = "clase" if ocupado_excel else "libre"
+            icono = "🔴" if ocupado_excel else "✅"
+            texto = str(detalle_excel) if ocupado_excel else "Libre"
 
-            # Cruce con Reservas de Google (SOLO si el aula coincide exactamente)
-            if not esta_ocupado:
-                res_hoy = df_r[(df_r['fec'] == fecha_sel) & (df_r['aula'] == str(aula_sel).strip())]
+            # 2. Cruce con Reservas de Google (Solo si el bloque está 'Libre' en el Excel)
+            if not ocupado_excel:
+                # Filtro estricto: Fecha exacta y Aula exacta
+                reservas_match = df_r[(df_r['fec'] == fecha_sel) & (df_r['aula'] == str(aula_sel).strip())]
                 
-                for _, res in res_hoy.iterrows():
+                for _, res in reservas_match.iterrows():
                     try:
-                        # Extraer solo HH:MM
+                        # Extraemos la hora de inicio de la reserva (ej. '9:00:00' -> '9:00')
                         h_ini_res = ":".join(res['ini'].split(":")[:2])
-                        # Si la hora de inicio de la reserva está dentro de este bloque de texto
-                        if h_ini_res in hora_bloque:
-                            tipo, icono, detalle = "reserva", "🟡", f"RESERVA: {res['act']} ({res['user']})"
+                        # Si la hora de inicio de la reserva está contenida en el texto del bloque (ej. '08:00-09:40')
+                        if h_ini_res in hora_str or h_ini_res.replace("0", "", 1) in hora_str:
+                            tipo, icono, texto = "reserva", "🟡", f"RESERVA: {res['act']} ({res['user']})"
                             break
                     except: continue
 
-            st.markdown(f'<div class="bloque {tipo}"><span class="time-badge">{icono} {hora_bloque}</span> {detalle}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="bloque {tipo}"><span class="time-badge">{icono} {hora_str}</span> {texto}</div>', unsafe_allow_html=True)
