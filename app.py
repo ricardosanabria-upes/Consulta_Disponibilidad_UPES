@@ -458,20 +458,38 @@ with tab_semana:
                 estado, detalle = get_estado_bloque(
                     inst_s, dia_semana_key,
                     hora_row["HoraInicio"], hora_row["HoraFin"],
-                    df_horario, df_reservas, dia_fecha
+                    df_horario, None, dia_fecha
                 )
 
-                # Para la vista semanal ya no necesitamos segunda llamada
-                # get_estado_bloque ya filtra por fecha correctamente
+                # Si el ciclo dice libre, verificar reservas por fecha exacta
+                if estado == "libre" and df_reservas is not None and "fecha_date" in df_reservas.columns:
+                    c_inst = next((c for c in df_reservas.columns if c == "instalacion"), None)
+                    c_nom  = next((c for c in df_reservas.columns if c == "nombre"), None)
+                    c_act  = next((c for c in df_reservas.columns if c == "actividad"), None)
+                    if c_inst:
+                        filtradas = df_reservas[
+                            (df_reservas[c_inst].astype(str).str.strip() == inst_s) &
+                            (df_reservas["fecha_date"] == dia_fecha)
+                        ]
+                        for _, rrow in filtradas.iterrows():
+                            ini_r = rrow.get("hora_inicio_t")
+                            fin_r = rrow.get("hora_fin_t")
+                            if ini_r is None or fin_r is None:
+                                continue
+                            if hay_traslape(hora_row["HoraInicio"], hora_row["HoraFin"], ini_r, fin_r):
+                                nom = str(rrow[c_nom]) if c_nom else "—"
+                                act = str(rrow[c_act]) if c_act and rrow[c_act] not in ("nan", "") else ""
+                                estado = "reserva"
+                                detalle = f"{nom}{' — ' + act if act else ''}"
+                                break
 
                 if estado == "libre":
                     fila[col_key] = "✅ Libre"
                 elif estado == "clase":
                     mat = detalle.split("—")[0].strip() if "—" in detalle else detalle
-                    fila[col_key] = f"🔴 {mat[:25]}"
+                    fila[col_key] = f"🔴 {mat[:30]}"
                 else:
-                    nom = detalle.split("—")[0].strip() if "—" in detalle else detalle
-                    fila[col_key] = f"🟡 {nom[:25]}"
+                    fila[col_key] = f"🟡 {detalle[:35]}"
 
             tabla.append(fila)
 
