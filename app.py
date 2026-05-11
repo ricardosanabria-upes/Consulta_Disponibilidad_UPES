@@ -6,19 +6,19 @@ from datetime import datetime, date
 
 st.set_page_config(page_title="UPES", layout="wide")
 
-# URLs de conexión
-U_SHEETS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
-U_GIT = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
+# URLs
+URL_SHEETS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
+URL_GITHUB = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def cargar_datos():
-    # 1. RESERVAS (Lectura ultra-segura por posición)
+    # 1. RESERVAS (Google Sheets) - Lectura por posición para evitar nombres largos
     try:
-        r_raw = pd.read_csv(U_SHEETS, skiprows=1, header=None, dtype=str)
+        r_raw = pd.read_csv(URL_SHEETS, skiprows=1, header=None, dtype=str)
         res = pd.DataFrame()
         res['usuario'] = r_raw.iloc[:, 3]
         res['fecha'] = r_raw.iloc[:, 6]
-        res['aula'] = r_raw.iloc[:, 7].str.strip()
+        res['aula_res'] = r_raw.iloc[:, 7].str.strip().str.upper() # Todo a MAYÚSCULAS
         res['hi'] = r_raw.iloc[:, 8]
         res['hf'] = r_raw.iloc[:, 9]
         
@@ -29,66 +29,70 @@ def cargar_datos():
     except:
         df_res = pd.DataFrame()
 
-    # 2. HORARIO BASE
+    # 2. HORARIO (GitHub)
     try:
-        resp = requests.get(U_GIT)
+        resp = requests.get(URL_GITHUB)
         h_raw = pd.read_excel(io.BytesIO(resp.content))
         h_raw["Dia"] = h_raw["Dia"].ffill()
         h_raw["Hora"] = h_raw["Hora"].ffill()
-        lista = []
-        aulas = [c for c in h_raw.columns if c not in ["Dia", "Hora"]]
+        
+        lista_h = []
+        aulas_cols = [c for c in h_raw.columns if c not in ["Dia", "Hora"]]
         for _, fila in h_raw.iterrows():
             try:
-                t = str(fila["Hora"]).replace("–", "-")
-                hi = datetime.strptime(t.split("-")[0].strip(), "%H:%M").time()
-                hf = datetime.strptime(t.split("-")[1].strip(), "%H:%M").time()
-                for a in aulas:
+                h_txt = str(fila["Hora"]).replace("–", "-")
+                h_ini = datetime.strptime(h_txt.split("-")[0].strip(), "%H:%M").time()
+                h_fin = datetime.strptime(h_txt.split("-")[1].strip(), "%H:%M").time()
+                for a in aulas_cols:
                     v = str(fila[a]).strip()
                     ocu = (v != "" and v.lower() != "nan")
-                    lista.append({"d": str(fila["Dia"]), "h": t, "hi": hi, "hf": hf, "a": a.strip(), "i": v if ocu else "D", "t": "C" if ocu else "L"})
+                    lista_h.append({
+                        "dia": str(fila["Dia"]), "hora_t": h_txt, "hi": h_ini, "hf": h_fin,
+                        "aula_nom": a.strip(), "info": v if ocu else "Libre", "tipo": "C" if ocu else "L"
+                    })
             except: continue
-        df_hor = pd.DataFrame(lista)
+        df_hor = pd.DataFrame(lista_h)
     except:
         df_hor = None
     return df_res, df_hor
 
 df_r, df_h = cargar_datos()
 
-st.title("Control UPES")
+st.title("Sistema de Disponibilidad UPES")
 
 if df_h is not None:
     # Selectores
-    aula_sel = st.selectbox("Instalación", sorted(df_h["a"].unique()))
-    fecha_sel = st.date_input("Fecha", value=date.today())
+    aula_sel = st.selectbox("Seleccione Aula", sorted(df_h["aula_nom"].unique()))
+    fecha_sel = st.date_input("Fecha de consulta", value=date.today())
 
-    d_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
-    dia_txt = d_map.get(fecha_sel.weekday())
+    # Mapeo de día
+    d_m = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
+    dia_txt = d_m.get(fecha_sel.weekday())
 
     # Bloques del aula
-    bloques = df_h[df_h["a"] == aula_sel].drop_duplicates("h").sort_values("hi")
+    bloques = df_h[df_h["aula_nom"] == aula_sel].drop_duplicates("hora_t").sort_values("hi")
 
     for _, b in bloques.iterrows():
-        # A. Revisar Clase Fija
-        clase = df_h[(df_h["a"] == aula_sel) & (df_h["d"] == dia_txt) & (df_h["h"] == b["h"]) & (df_h["t"] == "C")]
+        # Filtro de Clase Fija
+        clase = df_h[(df_h["aula_nom"] == aula_sel) & (df_h["dia"] == dia_txt) & (df_h["hora_t"] == b["hora_t"]) & (df_h["tipo"] == "C")]
         
         if not clase.empty:
-            st.error(f"{b['h']} | CLASE: {clase.iloc[0]['i']}")
+            st.error(f"{b['hora_t']} | CLASE: {clase.iloc[0]['info']}")
         else:
-            # B. Revisar Reserva en Google Sheets
-            reservado = False
+            # Filtro de Reserva (Match más flexible para evitar que salga "Disponible")
+            res_found = False
             if not df_r.empty:
-                # Comparamos solo la primera palabra para evitar errores de formato (A-21, A-22, etc)
-                base_aula = aula_sel.split()[0]
-                m_r = df_r[(df_r["f_dt"] == fecha_sel) & (df_r["aula"].str.contains(base_aula, na=False))]
+                # Sacamos la identificación base (ej: "A-21")
+                id_base = aula_sel.split()[0].upper()
+                m_res = df_r[(df_r["f_dt"] == fecha_sel) & (df_r["aula_res"].str.contains(id_base, na=False))]
                 
-                for _, r in m_r.iterrows():
+                for _, r in m_res.iterrows():
                     if (b["hi"] < r["hf_dt"]) and (r["hi_dt"] < b["hf"]):
-                        st.warning(f"{b['h']} | RESERVADO: {r['usuario']}")
-                        reservado = True
+                        st.warning(f"{b['hora_t']} | RESERVADO: {r['usuario']}")
+                        res_found = True
                         break
             
-            if not reservado:
-                st.success(f"{b['h']} | Disponible")
+            if not res_found:
+                st.success(f"{b['hora_t']} | Disponible")
 
-# Verificación de carga (ayuda a saber si Sheets está conectado)
-st.write(f"Conexión con Reservas: {'ACTIVA' if not df_r.empty else 'SIN DATOS'}")
+st.info("Nota: Si las reservas no aparecen, verifica que el enlace de Google Sheets esté publicado como CSV.")
