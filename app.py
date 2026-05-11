@@ -4,7 +4,7 @@ import io
 import requests
 from datetime import datetime, date
 
-# ─── CONFIGURACIÓN VISUAL ─────────────────────────────────────────────────────
+# --- CONFIGURACIÓN DE INTERFAZ ---
 st.set_page_config(page_title="UPES - Disponibilidad", layout="wide")
 
 st.markdown("""
@@ -19,13 +19,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ─── FUNCIONES DE LIMPIEZA ────────────────────────────────────────────────────
-def limpiar_columna(txt):
-    """Limpia nombres de columnas eliminando espacios y tildes."""
-    import unicodedata
-    txt = str(txt).strip().lower()
-    return ''.join(c for c in unicodedata.normalize('NFD', txt) if unicodedata.category(c) != 'Mn')
-
+# --- LIMPIEZA DE DATOS ---
 def normalizar_aula(aula):
     a = str(aula).strip().upper()
     if "A-21" in a: return "A-21 C/ACONDICIONADO"
@@ -33,7 +27,7 @@ def normalizar_aula(aula):
     if "A-34" in a: return "A-34 (MESAS DE DIBUJO)"
     return a
 
-# ─── CARGA DE DATOS ───────────────────────────────────────────────────────────
+# --- CARGA DE DATOS DESDE EL ENLACE ---
 @st.cache_data(ttl=30)
 def cargar_reservas():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
@@ -41,30 +35,32 @@ def cargar_reservas():
         response = requests.get(url)
         content = response.content.decode('utf-8').splitlines()
         
-        # Encontrar la fila que contiene los datos reales
-        header_idx = -1
+        # 1. Saltar filas basura hasta encontrar los encabezados reales
+        start_idx = 0
         for i, line in enumerate(content):
             if "Marca temporal" in line:
-                header_idx = i
+                start_idx = i
                 break
         
-        if header_idx == -1: return None
+        df = pd.read_csv(io.StringIO("\n".join(content[start_idx:])))
         
-        df = pd.read_csv(io.StringIO("\n".join(content[header_idx:])))
+        # 2. Limpieza extrema de nombres de columnas (quitar espacios locos)
+        df.columns = [c.strip() for c in df.columns]
         
-        # Mapeo agresivo de columnas
-        rename_dict = {}
+        # 3. Mapeo flexible de columnas por palabras clave
+        mapping = {}
         for c in df.columns:
-            c_limpia = limpiar_columna(c)
-            if "fecha" in c_limpia: rename_dict[c] = "fecha"
-            elif "instalacion" in c_limpia: rename_dict[c] = "aula"
-            elif "inicio" in c_limpia: rename_dict[c] = "h_ini"
-            elif "finalizacion" in c_limpia or "fin" in c_limpia: rename_dict[c] = "h_fin"
-            elif "actividad" in c_limpia: rename_dict[c] = "actividad"
-            elif "solicitante" in c_limpia or "nombre" in c_limpia: rename_dict[c] = "nombre"
+            low = c.lower()
+            if "fecha" in low: mapping[c] = "fecha"
+            elif "instalación" in low or "instalacion" in low: mapping[c] = "aula"
+            elif "inicio" in low: mapping[c] = "h_ini"
+            elif "finalización" in low or "finalizacion" in low or "fin" in low: mapping[c] = "h_fin"
+            elif "actividad" in low: mapping[c] = "actividad"
+            elif "nombre" in low or "solicitante" in low: mapping[c] = "nombre"
             
-        return df.rename(columns=rename_dict)
-    except: return None
+        return df.rename(columns=mapping)
+    except:
+        return None
 
 @st.cache_data(ttl=3600)
 def cargar_horario():
@@ -97,11 +93,11 @@ def cargar_horario():
         return pd.DataFrame(filas)
     except: return None
 
-# ─── INTERFAZ Y LÓGICA ────────────────────────────────────────────────────────
+# --- UI Y LÓGICA ---
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
-st.markdown('### 🔍 Consultar disponibilidad')
+st.title("🔍 Consultar disponibilidad")
 
 c1, c2 = st.columns(2)
 with c1:
@@ -112,26 +108,27 @@ with c2:
 dia_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
 
 if df_h is not None:
+    # Filtrar clases del Excel
     bloques = df_h[(df_h["Aula"] == inst_sel.upper()) & (df_h["Dia"] == dia_map[fecha_sel.weekday()])]
-    st.write(f"**{inst_sel} — {fecha_sel.strftime('%d/%m/%Y')}**")
+    st.write(f"### {inst_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
 
     for _, row in bloques.iterrows():
         tipo, icono, detalle = ("clase", "🔴", row["Detalle"]) if row["Ocupada"] else ("libre", "✅", "Libre")
         
-        # VALIDACIÓN CONTRA RESERVAS
+        # VALIDAR CONTRA RESERVAS DEL ENLACE
         if not row["Ocupada"] and df_r is not None:
             for _, res in df_r.iterrows():
                 try:
-                    # En el CSV la fecha viene como YYYY-MM-DD
+                    # En tu CSV la fecha viene como YYYY-MM-DD
                     r_fecha = pd.to_datetime(res["fecha"]).date()
                     r_aula = normalizar_aula(res["aula"])
                     
                     if r_fecha == fecha_sel and inst_sel.upper() in r_aula:
-                        # Extraer hora (el CSV trae HH:MM:SS, quitamos los segundos)
+                        # Extraer hora (tomamos solo los primeros 5 caracteres para ignorar segundos)
                         h_res_ini = datetime.strptime(str(res["h_ini"]).strip()[:5], "%H:%M").time()
                         h_res_fin = datetime.strptime(str(res["h_fin"]).strip()[:5], "%H:%M").time()
                         
-                        # Comparación de traslape
+                        # Si hay traslape de horario
                         if row["H_Ini"] < h_res_fin and h_res_ini < row["H_Fin"]:
                             tipo, icono = "reserva", "🟡"
                             detalle = f"RESERVA: {res['actividad']} ({res['nombre']})"
