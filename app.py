@@ -4,7 +4,7 @@ import io
 import requests
 from datetime import datetime, date
 
-# --- CONFIGURACIÓN VISUAL ---
+# ─── CONFIGURACIÓN VISUAL ─────────────────────────────────────────────────────
 st.set_page_config(page_title="UPES - Disponibilidad", layout="wide")
 
 st.markdown("""
@@ -19,41 +19,50 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ─── LIMPIEZA DE DATOS QUIRÚRGICA ─────────────────────────────────────────────
+def limpiar_estricto(texto):
+    if pd.isna(texto): return ""
+    # Quita espacios normales, saltos de línea y espacios invisibles (\xa0)
+    return str(texto).replace('\xa0', ' ').strip().upper()
+
 def normalizar_aula(aula):
-    a = str(aula).replace('\xa0', ' ').strip().upper()
+    a = limpiar_estricto(aula)
     if "A-21" in a: return "A-21 C/ACONDICIONADO"
     if "A-22" in a: return "A-22 C/ACONDICIONADO"
     if "A-34" in a: return "A-34 (MESAS DE DIBUJO)"
     return a
 
-# --- CARGA DE DATOS ---
-@st.cache_data(ttl=60)
+# ─── CARGA DE DATOS DESDE EL ENLACE ───────────────────────────────────────────
+@st.cache_data(ttl=30)
 def cargar_reservas():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
     try:
         response = requests.get(url)
-        # Saltamos la 'f' y buscamos la cabecera real
-        lines = response.content.decode('utf-8').splitlines()
-        for i, line in enumerate(lines):
+        content = response.content.decode('utf-8').splitlines()
+        
+        # Encontrar la fila que contiene los encabezados ignorando basura inicial
+        header_idx = -1
+        for i, line in enumerate(content):
             if "Marca temporal" in line:
-                df = pd.read_csv(io.StringIO("\n".join(lines[i:])))
+                header_idx = i
                 break
         
-        # LIMPIEZA RADICAL DE COLUMNAS (Quitamos espacios locos)
-        df.columns = [c.strip() for c in df.columns]
+        if header_idx == -1: return None
         
-        # Mapeo basado en el CSV que subiste
-        rename_dict = {}
+        df = pd.read_csv(io.StringIO("\n".join(content[header_idx:])))
+        
+        # Mapeo por palabras clave ignorando espacios y tildes
+        mapping = {}
         for c in df.columns:
-            low = c.lower()
-            if "fecha" in low: rename_dict[c] = "fecha"
-            elif "instalación" in low or "instalacion" in low: rename_dict[c] = "aula"
-            elif "inicio" in low: rename_dict[c] = "h_ini"
-            elif "finalización" in low or "finalizacion" in low or "fin" in low: rename_dict[c] = "h_fin"
-            elif "actividad" in low: rename_dict[c] = "actividad"
-            elif "solicitante" in low: rename_dict[c] = "nombre"
+            c_clean = c.lower().strip()
+            if "fecha" in c_clean: mapping[c] = "fecha"
+            elif "instalacion" in c_clean or "instalación" in c_clean: mapping[c] = "aula"
+            elif "inicio" in c_clean: mapping[c] = "h_ini"
+            elif "finalizacion" in c_clean or "finalización" in c_clean or "fin" in c_clean: mapping[c] = "h_fin"
+            elif "actividad" in c_clean: mapping[c] = "actividad"
+            elif "solicitante" in c_clean or "nombre" in c_clean: mapping[c] = "nombre"
             
-        return df.rename(columns=rename_dict)
+        return df.rename(columns=mapping)
     except: return None
 
 @st.cache_data(ttl=3600)
@@ -87,7 +96,7 @@ def cargar_horario():
         return pd.DataFrame(filas)
     except: return None
 
-# --- UI ---
+# ─── INTERFAZ ─────────────────────────────────────────────────────────────────
 df_h = cargar_horario()
 df_r = cargar_reservas()
 
@@ -104,31 +113,33 @@ dia_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Vierne
 if df_h is not None:
     dia_busc = dia_map.get(fecha_sel.weekday())
     bloques = df_h[(df_h["Aula"] == inst_sel.upper()) & (df_h["Dia"] == dia_busc)]
-    
     st.write(f"**{inst_sel} — {fecha_sel.strftime('%d/%m/%Y')}**")
 
     for _, row in bloques.iterrows():
         tipo, icono, detalle = ("clase", "🔴", row["Detalle"]) if row["Ocupada"] else ("libre", "✅", "Libre")
         
-        # VALIDACIÓN DE RESERVA
         if not row["Ocupada"] and df_r is not None:
             for _, res in df_r.iterrows():
                 try:
-                    # En tu CSV la fecha viene como 2026-05-11
-                    res_raw_f = str(res["fecha"]).strip()
-                    r_fecha = pd.to_datetime(res_raw_f).date()
+                    # En tu CSV la fecha viene como 2026-05-11 o 11/05/2026
+                    # Forzamos la detección inteligente de pandas
+                    r_fecha = pd.to_datetime(res["fecha"]).date()
                     r_aula = normalizar_aula(res["aula"])
                     
                     if r_fecha == fecha_sel and inst_sel.upper() in r_aula:
-                        # Extraer HH:MM (quitando segundos si los hay)
+                        # Limpieza de hora (de 08:00:00 a 08:00)
                         h_res_ini = datetime.strptime(str(res["h_ini"]).strip()[:5], "%H:%M").time()
                         h_res_fin = datetime.strptime(str(res["h_fin"]).strip()[:5], "%H:%M").time()
                         
-                        # TRASLAPE
                         if row["H_Ini"] < h_res_fin and h_res_ini < row["H_Fin"]:
                             tipo, icono = "reserva", "🟡"
                             detalle = f"RESERVA: {res['actividad']} ({res['nombre']})"
                             break
                 except: continue
 
-        st.markdown(f'<div class="bloque-item bloque-{tipo}"><div style="margin-right:10px">{icono}</div><span class="time-text">{row["Hora"]}</span> — {detalle}</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+            <div class="bloque-item bloque-{tipo}">
+                <div style="margin-right:10px">{icono}</div>
+                <span class="time-text">{row['Hora']}</span> — {detalle}
+            </div>
+        """, unsafe_allow_html=True)
