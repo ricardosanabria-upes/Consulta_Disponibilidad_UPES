@@ -4,8 +4,8 @@ import io
 import requests
 from datetime import datetime, date
 
-# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="UPES - Disponibilidad de Aulas", layout="wide")
+# ─── CONFIGURACIÓN VISUAL ─────────────────────────────────────────────────────
+st.set_page_config(page_title="UPES - Control de Aulas", layout="wide")
 
 st.markdown("""
 <style>
@@ -13,109 +13,108 @@ st.markdown("""
     .clase { background-color: #ffebee; color: #b71c1c; border-left: 6px solid #b71c1c; }
     .libre { background-color: #e8f5e9; color: #1b5e20; border-left: 6px solid #1b5e20; }
     .reserva { background-color: #fff9c4; color: #827717; border-left: 6px solid #fbc02d; font-weight: bold; }
-    .time-badge { font-size: 1.1rem; margin-right: 15px; font-weight: bold; }
+    .time-badge { font-weight: bold; margin-right: 12px; font-size: 1.1em; }
 </style>
 """, unsafe_allow_html=True)
 
-def limpiar_id(t):
+def normalizar(t):
+    """Limpia el texto para que 'A-21' coincida con 'A 21' o 'A21'."""
     if pd.isna(t): return ""
     return "".join(filter(str.isalnum, str(t))).upper()
 
-# ─── CARGA DE DATOS ──────────────────────────────────────────────────────────
 @st.cache_data(ttl=10)
-def cargar_datos():
-    # 1. RESERVAS (GOOGLE SHEETS)
+def cargar_todo():
+    # 1. CARGAR RESERVAS (GOOGLE SHEETS)
     url_res = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
-    df_reservas = pd.DataFrame()
+    df_res = pd.DataFrame()
     try:
-        res_raw = requests.get(url_res).text.splitlines()
-        start_row = 0
-        for i, line in enumerate(res_raw):
-            if "Marca temporal" in line: start_row = i; break
-        df_tmp = pd.read_csv(io.StringIO("\n".join(res_raw[start_row:])))
-        df_reservas['actividad'] = df_tmp.iloc[:, 4]
-        df_reservas['fecha'] = pd.to_datetime(df_tmp.iloc[:, 6], dayfirst=True, errors='coerce').dt.date
-        df_reservas['aula_id'] = df_tmp.iloc[:, 7].apply(limpiar_id)
-        df_reservas['h_ini'] = df_tmp.iloc[:, 8].astype(str)
-        df_reservas['h_fin'] = df_tmp.iloc[:, 9].astype(str)
-        df_reservas['nombre'] = df_tmp.iloc[:, 3]
+        r = requests.get(url_res).text.splitlines()
+        idx = next(i for i, line in enumerate(r) if "Marca temporal" in line)
+        tmp = pd.read_csv(io.StringIO("\n".join(r[idx:])))
+        df_res['act'] = tmp.iloc[:, 4]
+        df_res['fec'] = pd.to_datetime(tmp.iloc[:, 6], dayfirst=True, errors='coerce').dt.date
+        df_res['aula'] = tmp.iloc[:, 7].apply(normalizar)
+        df_res['ini'] = tmp.iloc[:, 8].astype(str)
+        df_res['fin'] = tmp.iloc[:, 9].astype(str)
+        df_res['user'] = tmp.iloc[:, 3]
     except: pass
 
-    # 2. HORARIO (GITHUB)
+    # 2. CARGAR HORARIO (GITHUB)
     url_hor = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
-    df_horario = pd.DataFrame()
-    lista_aulas = []
+    df_hor = pd.DataFrame()
+    aulas_reales = []
     try:
         resp = requests.get(url_hor)
-        df_xl = pd.read_excel(io.BytesIO(resp.content))
-        df_xl["Dia"] = df_xl["Dia"].ffill()
-        df_xl["Hora"] = df_xl["Hora"].ffill()
-        lista_aulas = [c for c in df_xl.columns if c not in ["Dia", "Hora"]]
+        xl = pd.read_excel(io.BytesIO(resp.content))
+        xl["Dia"] = xl["Dia"].ffill()
+        xl["Hora"] = xl["Hora"].ffill()
         
-        lista_final = []
-        for _, row in df_xl.iterrows():
+        # Filtrar columnas: Solo las que parecen aulas (ej: A-11, SUM, etc.)
+        # Excluimos "Dia", "Hora" y nombres de secciones como "Área Básica"
+        columnas = [c for c in xl.columns if c not in ["Dia", "Hora"]]
+        # Consideramos 'Aula' si tiene un guion o es una palabra corta como SUM o BIBLIO
+        aulas_reales = [c for c in columnas if "-" in str(c) or len(str(c)) < 10]
+        
+        lista = []
+        for _, row in xl.iterrows():
             try:
-                h_range = str(row["Hora"]).replace("–", "-").split("-")
-                h_ini = datetime.strptime(h_range[0].strip(), "%H:%M").time()
-                h_fin = datetime.strptime(h_range[1].strip(), "%H:%M").time()
-                for aula in lista_aulas:
-                    val = row[aula]
-                    ocupado = not (pd.isna(val) or str(val).strip() == "")
-                    lista_final.append({
-                        "Dia": str(row["Dia"]).strip(),
-                        "HoraStr": str(row["Hora"]),
-                        "H_Ini": h_ini, "H_Fin": h_fin,
-                        "AulaID": limpiar_id(aula),
-                        "Detalle": str(val).strip() if ocupado else "Libre",
-                        "Ocupado": ocupado
+                h_txt = str(row["Hora"]).replace("–", "-").strip()
+                h_ini = datetime.strptime(h_txt.split("-")[0].strip(), "%H:%M").time()
+                h_fin = datetime.strptime(h_txt.split("-")[1].strip(), "%H:%M").time()
+                for a in aulas_reales:
+                    val = row[a]
+                    ocu = not (pd.isna(val) or str(val).strip() == "")
+                    lista.append({
+                        "Dia": "".join(filter(str.isalpha, str(row["Dia"]))).upper(),
+                        "Hora": h_txt, "H_Ini": h_ini, "H_Fin": h_fin,
+                        "AulaNombre": a, "AulaID": normalizar(a),
+                        "Detalle": str(val) if ocu else "Libre", "Ocu": ocu
                     })
             except: continue
-        df_horario = pd.DataFrame(lista_final)
+        df_hor = pd.DataFrame(lista)
     except: pass
-    return df_reservas, df_horario, lista_aulas
+    return df_res, df_hor, sorted(aulas_reales)
 
-df_r, df_h, lista_aulas = cargar_datos()
+# ─── LÓGICA PRINCIPAL ────────────────────────────────────────────────────────
+df_res, df_hor, lista_aulas = cargar_todo()
 
-# ─── INTERFAZ ────────────────────────────────────────────────────────────────
 st.title("🏫 Control de Aulas UPES")
 
-if lista_aulas:
+if not lista_aulas:
+    st.error("No se detectaron aulas en el archivo. Revisa los encabezados del Excel.")
+else:
     c1, c2 = st.columns(2)
-    aula_sel = c1.selectbox("Seleccione la Instalación", lista_aulas)
+    aula_sel = c1.selectbox("Seleccione el Aula / Instalación", lista_aulas)
     fecha_sel = c2.date_input("Fecha de consulta", value=date.today())
 
-    # Lógica de días flexible (busca "Lunes" dentro de "1.Lunes")
-    nombres_dias = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"]
-    dia_buscado = nombres_dias[fecha_sel.weekday()]
-    id_aula = limpiar_id(aula_sel)
+    dias_sem = ["LUNES", "MARTES", "MIERCOLES", "JUEVES", "VIERNES", "SABADO", "DOMINGO"]
+    dia_txt = dias_sem[fecha_sel.weekday()]
+    id_buscado = normalizar(aula_sel)
 
-    # Filtrar bloques del horario base
-    if not df_h.empty:
-        bloques = df_h[(df_h["AulaID"] == id_aula) & (df_h["Dia"].str.contains(dia_buscado, case=False, na=False))]
-        
-        st.subheader(f"Disponibilidad: {aula_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
+    st.subheader(f"Disponibilidad de {aula_sel} — {fecha_sel.strftime('%d/%m/%Y')}")
 
-        if bloques.empty:
-            st.warning(f"No hay bloques de clase definidos para el día {dia_buscado} en el horario base.")
-            # Si no hay bloques de clase, buscamos si al menos hay reservas para ese día
-            res_hoy = df_r[(df_r['fecha'] == fecha_sel) & (df_r['aula_id'] == id_aula)]
-            if not res_hoy.empty:
-                st.info("Sin embargo, se encontraron las siguientes reservas individuales:")
-                for _, r in res_hoy.iterrows():
-                    st.markdown(f'<div class="bloque reserva"><span class="time-badge">🟡 {r["h_ini"]} - {r["h_fin"]}</span> RESERVA: {r["actividad"]} ({r["nombre"]})</div>', unsafe_allow_html=True)
-        else:
-            for _, row in bloques.iterrows():
-                tipo, detalle, icono = ("clase", row["Detalle"], "🔴") if row["Ocupado"] else ("libre", "Libre", "✅")
-                
-                # Cruce con reservas
-                match = df_r[(df_r['fecha'] == fecha_sel) & (df_r['aula_id'] == id_aula)]
-                for _, res in match.iterrows():
-                    try:
-                        r_ini = datetime.strptime(":".join(res['h_ini'].split(":")[:2]), "%H:%M").time()
-                        r_fin = datetime.strptime(":".join(res['h_fin'].split(":")[:2]), "%H:%M").time()
-                        if row["H_Ini"] < r_fin and r_ini < row["H_Fin"]:
-                            tipo, detalle, icono = "reserva", f"RESERVA: {res['actividad']} ({res['nombre']})", "🟡"
-                            break
-                    except: continue
-                
-                st.markdown(f'<div class="bloque {tipo}"><span class="time-badge">{icono} {row["HoraStr"]}</span> {detalle}</div>', unsafe_allow_html=True)
+    # Filtrar por aula y día
+    bloques = df_hor[(df_hor["AulaID"] == id_buscado) & (df_hor["Dia"] == dia_txt)]
+
+    if bloques.empty:
+        st.warning(f"No hay clases base para el {dia_txt}. Mostrando solo reservas del formulario.")
+        # Mostrar reservas aunque no haya bloques de clase
+        res_h = df_res[(df_res['fec'] == fecha_sel) & (df_res['aula'] == id_buscado)]
+        for _, r in res_h.iterrows():
+            st.markdown(f'<div class="bloque reserva"><span class="time-badge">🟡 {r["ini"]} - {r["fin"]}</span> {r["act"]} ({r["user"]})</div>', unsafe_allow_html=True)
+    else:
+        for _, row in bloques.iterrows():
+            tipo, icono, txt = ("clase", "🔴", row["Detalle"]) if row["Ocu"] else ("libre", "✅", "Libre")
+            
+            # Cruce con Reservas
+            match_r = df_res[(df_res['fec'] == fecha_sel) & (df_res['aula'] == id_buscado)]
+            for _, res in match_r.iterrows():
+                try:
+                    r_ini = datetime.strptime(":".join(res['ini'].split(":")[:2]), "%H:%M").time()
+                    r_fin = datetime.strptime(":".join(res['fin'].split(":")[:2]), "%H:%M").time()
+                    if row["H_Ini"] < r_fin and r_ini < row["H_Fin"]:
+                        tipo, icono, txt = "reserva", "🟡", f"RESERVA: {res['act']} ({res['user']})"
+                        break
+                except: continue
+            
+            st.markdown(f'<div class="bloque {tipo}"><span class="time-badge">{icono} {row["Hora"]}</span> {txt}</div>', unsafe_allow_html=True)
