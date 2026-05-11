@@ -6,27 +6,25 @@ from datetime import datetime, date
 
 st.set_page_config(page_title="UPES - Sistema de Disponibilidad", layout="wide")
 
-# --- ESTILOS ---
 st.markdown("""
 <style>
     .bloque { padding: 10px; border-radius: 5px; margin-bottom: 5px; border: 1px solid #ccc; font-family: sans-serif; }
     .clase { background-color: #f8d7da; color: #721c24; border-left: 5px solid #dc3545; }
     .libre { background-color: #d4edda; color: #155724; border-left: 5px solid #28a745; }
-    .reserva { background-color: #fff3cd; color: #856404; border-left: 5px solid #ffc107; }
+    .reserva { background-color: #fff3cd; color: #856404; border-left: 5px solid #ffc107; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-def limpiar_texto(t):
+def limpiar_id(t):
     if pd.isna(t): return ""
     return "".join(filter(str.isalnum, str(t))).upper()
 
 @st.cache_data(ttl=10)
 def cargar_datos():
-    # 1. CARGAR RESERVAS (GOOGLE SHEETS)
+    # 1. RESERVAS
     url_res = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRTXl1SeHi0aSgyVMnLRw-f42SR9G_JEywRfvTak6nx1vyU5PQ4EnA161DheHsjjrjmjR-lJHaXzwMK/pub?gid=1879457457&single=true&output=csv"
     try:
         res_raw = requests.get(url_res).text.splitlines()
-        # Buscar la fila de encabezados real
         start_row = 0
         for i, line in enumerate(res_raw):
             if "Marca temporal" in line:
@@ -34,18 +32,18 @@ def cargar_datos():
                 break
         df_res = pd.read_csv(io.StringIO("\n".join(res_raw[start_row:])))
         
-        # Limpiar Columnas de Reservas usando POSICIÓN (según tu imagen)
         reservas = pd.DataFrame()
-        reservas['actividad'] = df_res.iloc[:, 4] # Columna E
-        reservas['fecha'] = pd.to_datetime(df_res.iloc[:, 6], dayfirst=True, errors='coerce').dt.date # Columna G
-        reservas['aula_id'] = df_res.iloc[:, 7].apply(limpiar_texto) # Columna H
-        reservas['h_ini'] = df_res.iloc[:, 8].astype(str).str.strip() # Columna I
-        reservas['h_fin'] = df_res.iloc[:, 9].astype(str).str.strip() # Columna J
-        reservas['nombre'] = df_res.iloc[:, 3] # Columna D
+        reservas['actividad'] = df_res.iloc[:, 4]
+        # PARSEO FLEXIBLE DE FECHA: Intenta Día/Mes/Año primero, si falla usa el del sistema
+        reservas['fecha'] = pd.to_datetime(df_res.iloc[:, 6], dayfirst=True, errors='coerce').dt.date
+        reservas['aula_id'] = df_res.iloc[:, 7].apply(limpiar_id)
+        reservas['h_ini'] = df_res.iloc[:, 8].astype(str)
+        reservas['h_fin'] = df_res.iloc[:, 9].astype(str)
+        reservas['nombre'] = df_res.iloc[:, 3]
     except:
         reservas = pd.DataFrame()
 
-    # 2. CARGAR HORARIO (GITHUB)
+    # 2. HORARIO
     url_hor = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
     try:
         resp = requests.get(url_hor)
@@ -67,7 +65,7 @@ def cargar_datos():
                         "Dia": str(row["Dia"]).strip(),
                         "HoraStr": str(row["Hora"]),
                         "H_Ini": h_ini, "H_Fin": h_fin,
-                        "AulaID": limpiar_texto(aula),
+                        "AulaID": limpiar_id(aula),
                         "Detalle": str(val).strip() if ocupado else "Libre",
                         "Ocupado": ocupado
                     })
@@ -80,43 +78,40 @@ def cargar_datos():
 
 df_r, df_h = cargar_datos()
 
-# --- INTERFAZ ---
 st.title("Sistema de Disponibilidad UPES")
 
-aulas_opciones = ["A-11", "A-12", "A-14", "A-21 C/Acondicionado", "A-22 C/Acondicionado", "A-32", "A-34 (Mesas de dibujo)", "SUM", "BIBLIOTECA"]
-aula_sel = st.selectbox("Seleccione Aula", aulas_opciones)
+aula_sel = st.selectbox("Seleccione Aula", ["A-11", "A-12", "A-14", "A-21 C/Acondicionado", "A-22 C/Acondicionado", "A-32", "A-34 (Mesas de dibujo)", "SUM", "BIBLIOTECA"])
 fecha_sel = st.date_input("Seleccione Fecha", value=date.today())
 
 dias_map = {0:"1.Lunes", 1:"2.Martes", 2:"3.Miercoles", 3:"4.Jueves", 4:"5.Viernes", 5:"6.Sabado", 6:"7.Domingo"}
 dia_nombre = dias_map[fecha_sel.weekday()]
 
 if not df_h.empty:
-    id_buscado = limpiar_texto(aula_sel)
-    # Filtrar clases del horario base
+    id_buscado = limpiar_id(aula_sel)
     bloques = df_h[(df_h["AulaID"] == id_buscado) & (df_h["Dia"] == dia_nombre)]
     
-    st.subheader(f"Disponibilidad para {aula_sel} - {fecha_sel.strftime('%d/%m/%Y')}")
+    st.subheader(f"Estado de {aula_sel} - {fecha_sel.strftime('%d/%m/%Y')}")
     
     for _, row in bloques.iterrows():
         tipo = "clase" if row["Ocupado"] else "libre"
         detalle = row["Detalle"]
         icono = "🔴" if row["Ocupado"] else "✅"
         
-        # Verificar Reservas en bloques LIBRES
+        # CRUZAR CON RESERVAS
         if not row["Ocupado"] and not df_r.empty:
-            # Filtro estricto de reserva
-            match = df_r[
-                (df_r['fecha'] == fecha_sel) & 
-                (df_r['aula_id'] == id_buscado)
-            ]
+            # Buscamos coincidencias de fecha y aula
+            match = df_r[(df_r['fecha'] == fecha_sel) & (df_r['aula_id'] == id_buscado)]
             
             for _, res in match.iterrows():
                 try:
-                    # Normalizar hora de reserva (quitar segundos si existen)
-                    res_ini = datetime.strptime(res['h_ini'][:5], "%H:%M").time()
-                    res_fin = datetime.strptime(res['h_fin'][:5], "%H:%M").time()
+                    # Limpiar las horas de la reserva (ej: "8:00:00" -> "08:00")
+                    r_ini_str = res['h_ini'].strip().split()[0] # Por si trae AM/PM
+                    r_fin_str = res['h_fin'].strip().split()[0]
                     
-                    # Si hay traslape
+                    # Convertir a objeto time (tomando solo HH:MM)
+                    res_ini = datetime.strptime(":".join(r_ini_str.split(":")[:2]), "%H:%M").time()
+                    res_fin = datetime.strptime(":".join(r_fin_str.split(":")[:2]), "%H:%M").time()
+                    
                     if row["H_Ini"] < res_fin and res_ini < row["H_Fin"]:
                         tipo = "reserva"
                         detalle = f"RESERVA: {res['actividad']} ({res['nombre']})"
@@ -126,8 +121,7 @@ if not df_h.empty:
 
         st.markdown(f'<div class="bloque {tipo}"><b>{icono} {row["HoraStr"]}</b> - {detalle}</div>', unsafe_allow_html=True)
 
-# --- SECCIÓN DE DEPURACIÓN (BORRAR DESPUÉS) ---
-with st.expander("DEBUG: Ver qué está leyendo el sistema"):
-    st.write("Día detectado:", dia_nombre)
-    st.write("ID de Aula buscado:", id_buscado)
-    st.write("Muestra de Reservas cargadas:", df_r.head())
+with st.expander("DEBUG: Información del Sistema"):
+    st.write("Fecha buscada hoy:", fecha_sel)
+    st.write("Reservas encontradas para esta fecha y aula:", len(df_r[(df_r['fecha'] == fecha_sel) & (df_r['aula_id'] == id_buscado)]))
+    st.dataframe(df_r.head(10))
