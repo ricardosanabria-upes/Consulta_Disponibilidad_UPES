@@ -226,7 +226,10 @@ def get_estado_bloque(instalacion, dia_semana, hora_ini, hora_fin,
                 if hay_traslape(hora_ini, hora_fin, ini_r, fin_r):
                     nom = str(row[c_nom]) if c_nom else "—"
                     act = str(row[c_act]) if c_act else ""
-                    detalle = f"{nom}" + (f" — {act}" if act and act not in ("nan", "") else "")
+                    hora_exacta = f"{ini_r.strftime('%H:%M')}-{fin_r.strftime('%H:%M')}"
+                    detalle = f"{nom} (reserva: {hora_exacta})"
+                    if act and act not in ("nan", ""):
+                        detalle += f" — {act}"
                     return "reserva", detalle
 
     return "libre", "Disponible"
@@ -234,13 +237,15 @@ def get_estado_bloque(instalacion, dia_semana, hora_ini, hora_fin,
 
 def get_bloques_dia(instalacion, fecha, df_horario, df_reservas):
     """
-    Retorna lista de bloques del horario del ciclo para esa instalación/día,
-    más las reservas que no coincidan con bloques del ciclo.
+    Retorna dos listas separadas:
+    - bloques: bloques del ciclo (clase o libre)
+    - reservas: reservas registradas con horario exacto
     """
     dia_semana = DIA_SEMANA.get(fecha.weekday(), "")
-    bloques = []
+    bloques   = []
+    reservas  = []
 
-    # Bloques del ciclo
+    # ── Bloques del ciclo (Excel) ─────────────────────────────────────────────
     if df_horario is not None:
         df_inst = df_horario[
             (df_horario["Aula"] == instalacion) &
@@ -250,37 +255,22 @@ def get_bloques_dia(instalacion, fecha, df_horario, df_reservas):
         for _, row in df_inst.iterrows():
             if row["Ocupada"]:
                 bloques.append({
-                    "hora": row["Hora"],
-                    "tipo": "clase",
+                    "hora":   row["Hora"],
+                    "tipo":   "clase",
                     "detalle": f"{row['Codigo']} {row['Materia']} — Sección {row['Seccion']}",
-                    "h_ini": row["HoraInicio"],
-                    "h_fin": row["HoraFin"],
+                    "h_ini":  row["HoraInicio"],
+                    "h_fin":  row["HoraFin"],
                 })
             else:
-                # Verificar si hay reserva en este bloque libre
-                estado, detalle = get_estado_bloque(
-                    instalacion, dia_semana,
-                    row["HoraInicio"], row["HoraFin"],
-                    None, df_reservas, fecha
-                )
-                if estado == "reserva":
-                    bloques.append({
-                        "hora": row["Hora"],
-                        "tipo": "reserva",
-                        "detalle": detalle,
-                        "h_ini": row["HoraInicio"],
-                        "h_fin": row["HoraFin"],
-                    })
-                else:
-                    bloques.append({
-                        "hora": row["Hora"],
-                        "tipo": "libre",
-                        "detalle": "Disponible",
-                        "h_ini": row["HoraInicio"],
-                        "h_fin": row["HoraFin"],
-                    })
+                bloques.append({
+                    "hora":   row["Hora"],
+                    "tipo":   "libre",
+                    "detalle": "Disponible",
+                    "h_ini":  row["HoraInicio"],
+                    "h_fin":  row["HoraFin"],
+                })
 
-    # Reservas fuera de bloques del ciclo
+    # ── Reservas registradas (Google Sheets) ──────────────────────────────────
     if df_reservas is not None and "fecha_date" in df_reservas.columns:
         c_inst = next((c for c in df_reservas.columns if c == "instalacion"), None)
         c_nom  = next((c for c in df_reservas.columns if c == "nombre"), None)
@@ -296,25 +286,23 @@ def get_bloques_dia(instalacion, fecha, df_horario, df_reservas):
                 fin_r = row.get("hora_fin_t")
                 if ini_r is None or fin_r is None:
                     continue
-                ya_cubierta = any(
-                    b["h_ini"] is not None and
-                    hay_traslape(ini_r, fin_r, b["h_ini"], b["h_fin"])
-                    for b in bloques
-                )
-                if not ya_cubierta:
-                    nom = str(row[c_nom]) if c_nom else "—"
-                    act = str(row[c_act]) if c_act else ""
-                    detalle = nom + (f" — {act}" if act and act not in ("nan", "") else "")
-                    bloques.append({
-                        "hora": f"{ini_r.strftime('%H:%M')}-{fin_r.strftime('%H:%M')}",
-                        "tipo": "reserva",
-                        "detalle": detalle,
-                        "h_ini": ini_r,
-                        "h_fin": fin_r,
-                    })
+                nom = str(row[c_nom]) if c_nom else "—"
+                act = str(row[c_act]) if c_act else ""
+                hora_exacta = f"{ini_r.strftime('%H:%M')} – {fin_r.strftime('%H:%M')}"
+                detalle = f"{hora_exacta} — {nom}"
+                if act and act not in ("nan", ""):
+                    detalle += f" — {act}"
+                reservas.append({
+                    "hora":   hora_exacta,
+                    "tipo":   "reserva",
+                    "detalle": detalle,
+                    "h_ini":  ini_r,
+                    "h_fin":  fin_r,
+                })
 
     bloques.sort(key=lambda b: b["h_ini"] or time(0, 0))
-    return bloques
+    reservas.sort(key=lambda r: r["h_ini"] or time(0, 0))
+    return bloques, reservas
 
 
 # ─── CARGAR DATOS ─────────────────────────────────────────────────────────────
@@ -388,37 +376,47 @@ with tab_dia:
     dia_nombre = DIA_NOMBRE.get(fecha.weekday(), "")
     st.markdown(f"### {instalacion} — {dia_nombre} {fecha.strftime('%d/%m/%Y')}")
 
-    bloques = get_bloques_dia(instalacion, fecha, df_horario, df_reservas)
+    bloques, reservas_dia = get_bloques_dia(instalacion, fecha, df_horario, df_reservas)
 
-    if not bloques:
+    if not bloques and not reservas_dia:
         st.info("No hay bloques de horario registrados para esta instalación en este día.")
     else:
         libres  = sum(1 for b in bloques if b["tipo"] == "libre")
         clases  = sum(1 for b in bloques if b["tipo"] == "clase")
-        reservas = sum(1 for b in bloques if b["tipo"] == "reserva")
 
         m1, m2, m3 = st.columns(3)
         m1.metric("✅ Libres", libres)
         m2.metric("🔴 Clases", clases)
-        m3.metric("🟡 Reservados", reservas)
+        m3.metric("🟡 Reservas", len(reservas_dia))
 
-        st.markdown("")
-        for b in bloques:
-            if b["tipo"] == "libre":
+        # ── Horario del ciclo ─────────────────────────────────────────────────
+        if bloques:
+            st.markdown("**Horario del ciclo:**")
+            for b in bloques:
+                if b["tipo"] == "libre":
+                    st.markdown(
+                        f"<div class='libre'>✅ <b>{b['hora']}</b> — Disponible</div>",
+                        unsafe_allow_html=True
+                    )
+                elif b["tipo"] == "clase":
+                    st.markdown(
+                        f"<div class='clase'>🔴 <b>{b['hora']}</b> — {b['detalle']}</div>",
+                        unsafe_allow_html=True
+                    )
+
+        # ── Reservas registradas ──────────────────────────────────────────────
+        st.markdown("**Reservas registradas:**")
+        if reservas_dia:
+            for r in reservas_dia:
                 st.markdown(
-                    f"<div class='libre'>✅ <b>{b['hora']}</b> — Disponible</div>",
+                    f"<div class='reserva'>🟡 {r['detalle']}</div>",
                     unsafe_allow_html=True
                 )
-            elif b["tipo"] == "clase":
-                st.markdown(
-                    f"<div class='clase'>🔴 <b>{b['hora']}</b> — {b['detalle']}</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.markdown(
-                    f"<div class='reserva'>🟡 <b>{b['hora']}</b> — {b['detalle']}</div>",
-                    unsafe_allow_html=True
-                )
+        else:
+            st.markdown(
+                "<div class='libre'>✅ Sin reservas registradas para esta fecha</div>",
+                unsafe_allow_html=True
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
