@@ -162,9 +162,10 @@ def hay_traslape(ini1: time, fin1: time, ini2: time, fin2: time) -> bool:
 
 
 def get_estado_bloque(instalacion, dia_semana, hora_ini, hora_fin,
-                       df_horario, df_reservas):
+                       df_horario, df_reservas, fecha=None):
     """
     Retorna: ('libre'|'clase'|'reserva', detalle_str)
+    fecha: date — filtra reservas por fecha exacta (obligatorio para validar correctamente)
     """
     # Verificar clase del ciclo
     if df_horario is not None:
@@ -177,18 +178,25 @@ def get_estado_bloque(instalacion, dia_semana, hora_ini, hora_fin,
             if hay_traslape(hora_ini, hora_fin, row["HoraInicio"], row["HoraFin"]):
                 return "clase", f"{row['Codigo']} {row['Materia']} — Sección {row['Seccion']}"
 
-    # Verificar reserva existente
-    if df_reservas is not None:
-        c_inst = next((c for c in df_reservas.columns if c == "instalacion"), None)
+    # Verificar reserva existente — SIEMPRE filtra por fecha exacta
+    if df_reservas is not None and fecha is not None:
+        c_inst  = next((c for c in df_reservas.columns if c == "instalacion"), None)
         c_fecha = next((c for c in df_reservas.columns if c == "fecha"), None)
-        c_ini  = next((c for c in df_reservas.columns if c == "hora_inicio"), None)
-        c_fin  = next((c for c in df_reservas.columns if c == "hora_fin"), None)
-        c_nom  = next((c for c in df_reservas.columns if c == "nombre"), None)
-        c_act  = next((c for c in df_reservas.columns if c == "actividad"), None)
+        c_ini   = next((c for c in df_reservas.columns if c == "hora_inicio"), None)
+        c_fin   = next((c for c in df_reservas.columns if c == "hora_fin"), None)
+        c_nom   = next((c for c in df_reservas.columns if c == "nombre"), None)
+        c_act   = next((c for c in df_reservas.columns if c == "actividad"), None)
 
         if c_inst and c_fecha and c_ini and c_fin:
             for _, row in df_reservas.iterrows():
                 if str(row[c_inst]).strip() != instalacion:
+                    continue
+                # Validar fecha exacta
+                try:
+                    fecha_r = pd.to_datetime(str(row[c_fecha]), dayfirst=True).date()
+                except Exception:
+                    continue
+                if fecha_r != fecha:
                     continue
                 try:
                     ini_r = datetime.strptime(str(row[c_ini]).strip()[:5], "%H:%M").time()
@@ -233,7 +241,7 @@ def get_bloques_dia(instalacion, fecha, df_horario, df_reservas):
                 estado, detalle = get_estado_bloque(
                     instalacion, dia_semana,
                     row["HoraInicio"], row["HoraFin"],
-                    None, df_reservas
+                    None, df_reservas, fecha
                 )
                 if estado == "reserva":
                     bloques.append({
@@ -440,43 +448,11 @@ with tab_semana:
                 estado, detalle = get_estado_bloque(
                     inst_s, dia_semana_key,
                     hora_row["HoraInicio"], hora_row["HoraFin"],
-                    df_horario, df_reservas if df_reservas is not None else None
+                    df_horario, df_reservas, dia_fecha
                 )
 
-                # Para la vista semanal verificar también reservas con fecha exacta
-                if estado == "libre" and df_reservas is not None:
-                    estado2, detalle2 = get_estado_bloque(
-                        inst_s, dia_semana_key,
-                        hora_row["HoraInicio"], hora_row["HoraFin"],
-                        None, df_reservas
-                    )
-                    # Buscar por fecha exacta también
-                    c_inst  = next((c for c in df_reservas.columns if c == "instalacion"), None)
-                    c_fecha = next((c for c in df_reservas.columns if c == "fecha"), None)
-                    c_ini   = next((c for c in df_reservas.columns if c == "hora_inicio"), None)
-                    c_fin   = next((c for c in df_reservas.columns if c == "hora_fin"), None)
-                    c_nom   = next((c for c in df_reservas.columns if c == "nombre"), None)
-                    c_act   = next((c for c in df_reservas.columns if c == "actividad"), None)
-
-                    if c_inst and c_fecha and c_ini and c_fin:
-                        for _, rrow in df_reservas.iterrows():
-                            if str(rrow[c_inst]).strip() != inst_s:
-                                continue
-                            try:
-                                fecha_r = pd.to_datetime(str(rrow[c_fecha]), dayfirst=True).date()
-                            except Exception:
-                                continue
-                            if fecha_r != dia_fecha:
-                                continue
-                            try:
-                                ini_r = datetime.strptime(str(rrow[c_ini]).strip()[:5], "%H:%M").time()
-                                fin_r = datetime.strptime(str(rrow[c_fin]).strip()[:5], "%H:%M").time()
-                            except Exception:
-                                continue
-                            if hay_traslape(hora_row["HoraInicio"], hora_row["HoraFin"], ini_r, fin_r):
-                                nom = str(rrow[c_nom]) if c_nom else "—"
-                                estado = "reserva"
-                                detalle = nom
+                # Para la vista semanal ya no necesitamos segunda llamada
+                # get_estado_bloque ya filtra por fecha correctamente
 
                 if estado == "libre":
                     fila[col_key] = "✅ Libre"
@@ -519,3 +495,4 @@ with tab_semana:
         m2.metric("✅ Libres", libres_s)
         m3.metric("🔴 Clases", clases_s)
         m4.metric("🟡 Reservados", reservas_s)
+
