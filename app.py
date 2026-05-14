@@ -300,9 +300,13 @@ with tab_dia:
             st.markdown("<div class='libre'>✅ Sin reservas registradas para esta fecha</div>", unsafe_allow_html=True)
 
 with tab_semana:
-    inst_s = st.selectbox("🏛 Instalación", INSTALACIONES, key="inst_s")
-    hoy = date.today()
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
+    c1s, c2s = st.columns(2)
+    with c1s:
+        inst_s = st.selectbox("🏛 Instalación", INSTALACIONES, key="inst_s")
+    with c2s:
+        fecha_s = st.date_input("📅 Selecciona cualquier día de la semana", value=fecha, key="fecha_s")
+
+    inicio_semana = fecha_s - timedelta(days=fecha_s.weekday())
     dias_semana = [inicio_semana + timedelta(days=i) for i in range(6)]
     st.markdown(f"### {inst_s} — Semana del {inicio_semana.strftime('%d/%m')} al {(inicio_semana + timedelta(days=5)).strftime('%d/%m/%Y')}")
     cols_dias = [(d, f"{DIA_NOMBRE.get(d.weekday(),'')} {d.strftime('%d/%m')}") for d in dias_semana]
