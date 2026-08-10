@@ -5,6 +5,7 @@ Consulta de Disponibilidad de Instalaciones — UPES
 import streamlit as st
 import pandas as pd
 import io
+import os
 from datetime import datetime, date, time, timedelta
 
 st.set_page_config(
@@ -34,7 +35,7 @@ st.markdown("""
 try:
     GOOGLE_SHEET_URL = st.secrets["SHEETS_URL"]
 except Exception:
-    GOOGLE_SHEET_URL = ""
+    GOOGLE_SHEET_URL = os.environ.get("SHEETS_URL", "")
 
 EXCEL_GITHUB_URL = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx"
 
@@ -102,7 +103,7 @@ def cargar_reservas_sheets():
     except:
         return None
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def cargar_horario_github():
     try:
         import requests
@@ -223,7 +224,6 @@ def get_bloques_dia(instalacion, fecha, df_horario, df_reservas):
     reservas.sort(key=lambda r: r["h_ini"] or time(0, 0))
     return bloques, reservas
 
-# ─── CARGAR DATOS ─────────────────────────────────────────────────────────────
 df_horario  = cargar_horario_github()
 df_reservas = cargar_reservas_sheets()
 
@@ -239,13 +239,14 @@ with st.sidebar:
     st.markdown("")
     if df_reservas is not None:
         st.success(f"✅ Reservas en tiempo real\n\n{len(df_reservas)} registros cargados")
-        if st.button("🔄 Actualizar reservas"):
-            st.cache_data.clear()
-            st.rerun()
     else:
         st.warning("⚠️ No se pudieron cargar las reservas de Google Sheets")
         if not GOOGLE_SHEET_URL:
             st.error("❌ URL de Google Sheets no configurada en Secrets")
+    st.markdown("")
+    if st.button("🔄 Actualizar todo"):
+        st.cache_data.clear()
+        st.rerun()
     st.markdown("---")
     st.markdown("<small style='color:#94a3b8'>📊 Horario: se actualiza cada ciclo en GitHub<br><br>📋 Reservas: se actualizan automáticamente cada 5 minutos desde Google Sheets</small>", unsafe_allow_html=True)
 
@@ -317,7 +318,6 @@ with tab_semana:
         df_inst_h = df_horario[df_horario["Aula"] == inst_s].copy()
         horas_unicas = df_inst_h[["Hora", "HoraInicio", "HoraFin"]].drop_duplicates().sort_values("HoraInicio")
 
-        # ── TABLA 1: Clases del ciclo ─────────────────────────────────────────
         st.markdown("#### 🔴 Clases del ciclo")
         tabla_clases = []
         for _, hora_row in horas_unicas.iterrows():
@@ -345,7 +345,6 @@ with tab_semana:
                 return ""
             st.dataframe(df_clases.style.map(color_clases), use_container_width=True, height=340)
 
-        # ── TABLA 2: Reservas de eventos ──────────────────────────────────────
         st.markdown("#### 🟡 Reservas de eventos")
         if df_reservas is None or "fecha_date" not in df_reservas.columns:
             st.info("No hay datos de reservas disponibles.")
@@ -406,3 +405,4 @@ with tab_semana:
                         if str(val).startswith("🟡"): return "background-color: #fefce8; color: #713f12;"
                         return ""
                     st.dataframe(df_res.style.map(color_reservas), use_container_width=True, height=min(80 + len(tabla_res) * 40, 340))
+
