@@ -37,7 +37,7 @@ try:
 except Exception:
     GOOGLE_SHEET_URL = os.environ.get("SHEETS_URL", "")
 
-EXCEL_GITHUB_URL = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE%20AULAS%20CICLO%20ACTUAL.xlsx?v=2"
+EXCEL_GITHUB_URL = "https://raw.githubusercontent.com/ricardosanabria-upes/Reservas_UPES/main/DETALLE_AULAS_CICLO_ACTUAL.xlsx?v=2"
 
 INSTALACIONES = [
     "A-11", "A-12", "A-13", "A-14", "A-15", "A-16",
