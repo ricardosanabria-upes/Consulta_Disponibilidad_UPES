@@ -308,8 +308,8 @@ with tab_semana:
         fecha_s = st.date_input("📅 Selecciona cualquier día de la semana", value=fecha, key="fecha_s")
 
     inicio_semana = fecha_s - timedelta(days=fecha_s.weekday())
-    dias_semana = [inicio_semana + timedelta(days=i) for i in range(6)]
-    st.markdown(f"### {inst_s} — Semana del {inicio_semana.strftime('%d/%m')} al {(inicio_semana + timedelta(days=5)).strftime('%d/%m/%Y')}")
+    dias_semana = [inicio_semana + timedelta(days=i) for i in range(7)]
+    st.markdown(f"### {inst_s} — Semana del {inicio_semana.strftime('%d/%m')} al {(inicio_semana + timedelta(days=6)).strftime('%d/%m/%Y')}")
     cols_dias = [(d, f"{DIA_NOMBRE.get(d.weekday(),'')} {d.strftime('%d/%m')}") for d in dias_semana]
 
     if df_horario is None:
@@ -405,3 +405,4 @@ with tab_semana:
                         if str(val).startswith("🟡"): return "background-color: #fefce8; color: #713f12;"
                         return ""
                     st.dataframe(df_res.style.map(color_reservas), use_container_width=True, height=min(80 + len(tabla_res) * 40, 340))
+
