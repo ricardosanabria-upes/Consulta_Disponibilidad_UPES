@@ -71,6 +71,10 @@ def cargar_horario_ciclo():
 def cargar_reservas():
     """Carga reservas desde Google Sheets"""
     try:
+        # Verificar si existen las credenciales
+        if "gcp_service_account" not in st.secrets or "SHEETS_URL" not in st.secrets:
+            return pd.DataFrame()
+        
         SHEETS_URL = st.secrets["SHEETS_URL"]
         # Usar gspread para leer Google Sheets
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
